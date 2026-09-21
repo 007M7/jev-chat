@@ -42,6 +42,13 @@ struct ProbeView: View {
                 Text(err).font(.footnote).foregroundStyle(.red)
             }
 
+            // 成本控制的可视证据：门放行次数应该远小于总帧数
+            LabeledContent("变化检测门", value: capture.gateStatus)
+            LabeledContent("放行去分析", value: "\(capture.stableFrameCount) 次 / 共 \(capture.totalFrames) 帧")
+            Text("门的意义：云端感知一次约 4~6 秒且要花钱，绝不能每帧都调。"
+                 + "只有画面稳定且与上次不同时才放行。放行次数远小于帧数就说明闸门在工作。")
+                .font(.footnote).foregroundStyle(.secondary)
+
             if capture.isCapturing {
                 Button("停止采集", role: .destructive) { capture.stop() }
             } else {

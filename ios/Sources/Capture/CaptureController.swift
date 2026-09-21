@@ -26,6 +26,16 @@ final class CaptureController: NSObject, ObservableObject {
     @Published private(set) var frameSize: String = "—"
     @Published private(set) var isAppInBackground = false
     @Published private(set) var lastError: String?
+    /// 变化检测门的当前判定，显示在界面上（"为什么这次没送/送了"）
+    @Published private(set) var gateStatus: String = "未开始"
+    /// 门放行的次数：正常工作时它应该远小于总帧数——这就是成本控制的效果
+    @Published private(set) var stableFrameCount = 0
+
+    /// **扩展点**：门判定"画面已稳定"时回调，接感知层。
+    /// 下一轮把 PerceptionClient 挂到这里即可，采集与限流不用动。
+    var onStableFrame: ((UIImage) -> Void)?
+
+    private let gate = FrameGate()
 
     /// 采样到的帧（内存里只留最近一帧，用于"看一下它到底截到了什么"）
     private(set) var lastFrame: UIImage?
@@ -117,12 +127,27 @@ final class CaptureController: NSObject, ObservableObject {
         }
     }
 
-    /// 每 0.5 秒刷新一次"最近一帧是几秒前"，用来肉眼判断流有没有断
+    /// 每 0.5 秒做两件事：刷新"最近一帧是几秒前"，并驱动变化检测门。
+    ///
+    /// **门必须由定时器驱动**：画面稳定后可能不再来帧（桌面版实测踩过这个坑），
+    /// 只在帧到达时判定的话，稳定帧永远发不出去。
     private func startTicking() {
         tickTimer?.invalidate()
         tickTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshLastFrameAgo() }
+            Task { @MainActor in
+                self?.refreshLastFrameAgo()
+                self?.tickGate()
+            }
         }
+    }
+
+    private func tickGate() {
+        let decision = gate.tick(at: Date())
+        gateStatus = decision.reason
+        guard decision.shouldAnalyze, let img = lastFrame else { return }
+        stableFrameCount += 1
+        // 交给上层（下一轮 = 感知 → 判断 → 通知/灵动岛）
+        onStableFrame?(img)
     }
 
     private var lastFrameAt: Date?
@@ -206,7 +231,11 @@ final class CaptureController: NSObject, ObservableObject {
         totalFrames += 1
         lastFrameAt = time
         frameSize = "\(width)×\(height)"
-        if let snapshot { lastFrame = snapshot }
+        if let snapshot {
+            lastFrame = snapshot
+            // 喂给变化检测门：只更新"画面有没有变"，放行判定在定时器里做
+            gate.ingest(image: snapshot, at: time)
+        }
         if totalFrames % 100 == 0 { saveLog() }
     }
 }
