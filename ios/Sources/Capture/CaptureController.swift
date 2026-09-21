@@ -71,13 +71,14 @@ final class CaptureController: NSObject, ObservableObject {
 
     /// 由用户点按钮触发。ScreenCaptureKit 要求通过系统选择器拿授权，
     /// 不能自己静默开始 —— 这一步就是 iOS 的"同意采集"。
+    ///
+    /// 注意：macOS 上可以用 `SCContentSharingPickerConfiguration.allowedPickerModes`
+    /// 限定只选整屏，**iOS 上没有这个属性**（首次云构建实测报 'unavailable in iOS'）。
+    /// 所以这里不设配置，交给系统选择器，用户自己选「整个屏幕」。
+    /// 选到别的来源也不致命：探针会如实在界面上显示帧尺寸与后台收帧情况。
     func requestPermissionAndStart() {
         lastError = nil
         let picker = SCContentSharingPicker.shared
-        var config = SCContentSharingPickerConfiguration()
-        // 只允许整屏采集：我们要读的是微信，不是本 App 自己的窗口
-        config.allowedPickerModes = .singleDisplay
-        picker.defaultConfiguration = config
         picker.add(self)
         statusText = "等待你在系统选择器里选「整个屏幕」…"
         picker.present()
@@ -97,12 +98,10 @@ final class CaptureController: NSObject, ObservableObject {
     private func startStream(with filter: SCContentFilter) async {
         self.filter = filter
         let config = SCStreamConfiguration()
-        // 抽帧率压到 2fps：聊天界面变化很慢，2fps 足够。
-        config.minimumFrameInterval = CMTime(value: 1, timescale: 2)
-        config.showsCursor = false
-        // 刻意**不设** width/height：探针阶段先用原生分辨率，把 API 猜测面降到最小
-        // （缩放属于后续为云端调用省钱的优化，等确认能跑起来再动）。
-        // 实际帧尺寸会显示在界面上，用来估算一次分析的图片体积。
+        // **iOS 上不能设帧率**：SCStreamConfiguration.minimumFrameInterval 在 iOS 上
+        // 报 'unavailable in iOS'（首次云构建实测）。showsCursor 同样不可用。
+        // 所以限流只能自己做：见 stream(_:didOutputSampleBuffer:of:) 里的时间门。
+        // 这反而更合理——聊天界面变化很慢，按时间抽帧比按帧率设限更直接。
 
         let s = SCStream(filter: filter, configuration: config, delegate: self)
         do {
@@ -197,6 +196,8 @@ final class CaptureController: NSObject, ObservableObject {
     private nonisolated static let ciContext = CIContext(options: [.useSoftwareRenderer: false])
     /// 只在采集队列（串行）上读写，所以不需要额外加锁
     private nonisolated(unsafe) static var frameCounter = 0
+    /// 上一次把帧转成图片的时间。iOS 上不能设帧率，限流靠它。
+    private nonisolated(unsafe) static var lastSnapshotAt: Date?
 
     /// 在采集队列上把帧变成简单值 + 偶发的一张图片，再回主线程更新状态。
     /// 刻意不把 CMSampleBuffer 跨 actor 传递——它不是 Sendable，越过 actor 边界
@@ -223,11 +224,15 @@ extension CaptureController: SCStreamOutput {
         let h = CVPixelBufferGetHeight(pb)
         let now = Date()
 
-        // 每 20 帧抽一帧转图片（在采集队列上做，不把 buffer 跨线程传），
-        // 供"存相册核对到底截到了什么"。其余帧只记数，不转图——转图是这里最贵的操作。
+        // 限流必须自己做：iOS 上没有 minimumFrameInterval（云构建实测不可用）。
+        // 每帧只数数（极便宜），**最多每 500ms 转一张图**（转图是最贵的操作）。
+        // 这就是"Tier 0 变化检测"的起点——后续在这里加像素差判断，
+        // 只有消息区真的变了才把图送到感知层。
         Self.frameCounter += 1
         var snapshot: UIImage?
-        if Self.frameCounter % 20 == 1 {
+        let shouldSnap = Self.lastSnapshotAt.map { now.timeIntervalSince($0) >= 0.5 } ?? true
+        if shouldSnap {
+            Self.lastSnapshotAt = now
             let ci = CIImage(cvPixelBuffer: pb)
             if let cg = Self.ciContext.createCGImage(ci, from: ci.extent) {
                 snapshot = UIImage(cgImage: cg)
