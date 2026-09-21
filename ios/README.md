@@ -104,12 +104,25 @@ ios/
 
 ## 已知风险（诚实清单）
 
-| 风险 | 说明 |
+| 风险 | 状态 |
 |---|---|
-| CI runner 可能没有 Xcode 27 | 流水线第一步就会失败并明确报出，不是静默出错 |
-| 免费签名可能不支持 `screen-capture` 后台模式 | 这正是 Gate 1 ③ 要回答的 |
-| Swift API 签名可能要微调 | `SCContentSharingPickerObserver` 是新协议，我只有文档级确认，没有编译器验证。首次云构建报签名不符时按提示改参数名即可 |
-| widget 扩展的嵌入方式 | XcodeGen 的 app-extension 配置未经实测。若 CI 在这一步失败，可以先删掉 `JevWidget` target 与 `LiveActivityController`，Gate 1 的采集验证不受影响 |
+| ~~CI runner 没有 Xcode 27~~ | ✅ **已解决**：`macos-15` 上只有 Xcode 26.3 / iOS 26.2 SDK，改用 `xcode-27` 镜像后有 **Xcode 27.0 / iOS 27.0 SDK**，编译通过 |
+| ~~Swift API 签名需要微调~~ | ✅ **已解决**：云构建报出 3 个错误，全是 macOS 有、iOS 没有的属性（见下） |
+| ~~widget 扩展嵌入~~ | ✅ **已解决**：`JevWidget.appex` 已正确嵌入 `JevAssistant.app/PlugIns/` |
+| 免费签名可能不支持 `screen-capture` 后台模式 | ⏳ 这正是 Gate 1 ③ 要回答的，只能真机验 |
+| 真机授权是否每次都要重新确认 | ⏳ Gate 1 ①，只能真机验 |
+
+### 云构建查出的真实能力差异：iOS 的 ScreenCaptureKit 比 macOS 窄
+
+首次云构建报出三个属性 `'unavailable in iOS'`：
+
+| 属性 | 影响 | 应对 |
+|---|---|---|
+| `SCStreamConfiguration.minimumFrameInterval` | **不能设帧率** | 限流改为自己做：每帧只计数，最多每 500ms 转一张图（见 `FrameGate`） |
+| `SCStreamConfiguration.showsCursor` | 不能隐藏光标 | 无影响 |
+| `SCContentSharingPickerConfiguration.allowedPickerModes` | 不能限定"只选整屏" | 交给系统选择器，用户自己选「整个屏幕」 |
+
+这说明**抽帧与变化检测在 iOS 上是必需品而不是优化项**——没有 API 帮你限速。
 
 ## 与桌面版/安卓版的关系
 

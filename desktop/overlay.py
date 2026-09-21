@@ -315,8 +315,13 @@ class Overlay:
         self.render()
 
     def _show_loading(self, what: str) -> None:
+        # 新一轮开始必须清掉上一轮的判断与候选：实测踩到过"状态已变成读屏中，
+        # 面板上还挂着上一轮候选"的窗口，用户可能直接复制到过期内容。
         self.state.busy = True
         self.state.error = None
+        self.state.answers = {}
+        self.state.ranked = []
+        self.state.transcript = []
         self._set_status(what)
         if not self.expanded:
             self.toggle()

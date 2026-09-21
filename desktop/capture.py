@@ -177,6 +177,7 @@ class CaptureLoop:
         self.last_skip_reason: str | None = None
         self.last_area_error: str | None = None
         self.hwnd: int | None = None
+        self.closed = False         # WGC 会话是否已结束（窗口重建/过渡态）
 
     # ------------------------------------------------------------ 生命周期
 
@@ -184,6 +185,11 @@ class CaptureLoop:
         from windows_capture import WindowsCapture
 
         self.hwnd = hwnd
+        self.closed = False
+        self.frames_seen = self.frames_emitted = self.frames_skipped = 0
+        self._last = None
+        self._last_area = None
+        self._pending_since = 0.0
         cap = WindowsCapture(window_hwnd=hwnd, draw_border=False)
 
         @cap.event
@@ -195,7 +201,9 @@ class CaptureLoop:
 
         @cap.event
         def on_closed():
-            self.log("采集会话关闭（窗口被关闭？）")
+            # 窗口被关闭/重建，或处在尺寸过渡态时 WGC 会话会结束——标记出来让上层重挂。
+            self.closed = True
+            self.log("采集会话关闭（窗口重建或关闭），等待重挂")
 
         self._cap = cap
         self._control = cap.start_free_threaded()
