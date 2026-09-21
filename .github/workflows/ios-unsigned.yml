@@ -15,8 +15,12 @@ on:
 
 jobs:
   build:
-    # macos-15 是当前较新的 runner；若这里没有 Xcode 27，日志第一步就会告诉你
-    runs-on: macos-15
+    # 必须是带 Xcode 27 的镜像 —— ScreenCaptureKit 的 iOS 版从 iOS 27 SDK 才有。
+    # 实测 macos-15 上只有 Xcode 26.3 / iOS 26.2 SDK，会直接编译失败。
+    # actions/runner-images 的可用标签里，`xcode-27` 是带 Xcode 27 的镜像（arm64，preview）。
+    # 如果这个标签在你的账号下不可用，日志第一步就会报 "no runner matching the specified labels"，
+    # 那时需要自建 runner 或等正式镜像（见 ios/README.md 的备选方案）。
+    runs-on: xcode-27
     timeout-minutes: 40
 
     steps:
