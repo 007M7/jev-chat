@@ -1,0 +1,73 @@
+name: JevAssistant
+
+# 用 XcodeGen 生成工程，不把 .xcodeproj 提交进仓库。
+# 原因：.xcodeproj 冲突极难解决，且云构建上 `xcodegen generate` 只要几秒。
+# 本地没有 Mac 时不需要装 XcodeGen；GitHub Actions 的 macOS runner 会装。
+
+options:
+  bundleIdPrefix: com.jev
+  deploymentTarget:
+    iOS: "27.0"          # ScreenCaptureKit 的 iOS 版从 27.0 起提供（Apple 文档 introducedAt: 27.0）
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGNING_ALLOWED: "NO"      # 产出未签名 IPA，由 Sideloadly/AltStore 在 Windows 上重签
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGN_IDENTITY: ""
+    ENABLE_BITCODE: "NO"
+
+targets:
+  JevAssistant:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Shared                 # 与 widget 扩展共用 JevActivityAttributes
+    info:
+      # XcodeGen 按下面的 properties 生成这个文件（单一来源，别手写一份）
+      path: Support/Info.plist
+      properties:
+        CFBundleDisplayName: Jev 助手
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        # 关键：让采集流在切到微信后继续跑。Apple 文档 "Capturing screen content on iOS"
+        # 原文："screen-capture in UIBackgroundModes, so the stream survives backgrounding
+        # for full-display capture"。这是"全自动读屏"的命门，Gate 1 就是要验它。
+        # 注意：免费签名（个人 team）能否带这个后台模式，尚未验证。
+        UIBackgroundModes:
+          - screen-capture
+        # 存最近一帧到相册，用来人工核对"到底截到了什么"
+        NSPhotoLibraryAddUsageDescription: 保存采集到的截图，用于核对识别结果
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jev.assistant
+        TARGETED_DEVICE_FAMILY: "1"      # 只做 iPhone
+        GENERATE_INFOPLIST_FILE: "NO"
+    dependencies:
+      - target: JevWidget
+        embed: true
+        codeSign: false
+
+  # 实时活动（灵动岛/锁屏）必须由 widget 扩展渲染，App 只能更新数据。
+  # 这是本 target 存在的唯一原因。
+  JevWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Widget
+      - path: Shared
+    info:
+      path: Support/WidgetInfo.plist
+      properties:
+        CFBundleDisplayName: Jev 实时活动
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jev.assistant.widget
+        GENERATE_INFOPLIST_FILE: "NO"

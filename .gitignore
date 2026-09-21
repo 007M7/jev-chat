@@ -39,3 +39,22 @@ secrets.*
 *.jks
 *.keystore
 keystore.properties
+
+# iOS 原型输出（含真实聊天截图，禁止入库）
+tools/ios-spike/out/
+
+# Windows 原型输出（含真实聊天截图，禁止入库）
+tools/win-spike/out/
+
+# 依赖装在 D 盘，不进库
+desktop/vendor/
+
+# iOS 原生工程：XcodeGen 生成的产物与构建输出，不入库
+ios/*.xcodeproj/
+ios/Support/
+ios/build/
+ios/Payload/
+ios/*.ipa
+
+# agent 工作笔记（本机状态，不进公开仓库）
+.zcode/

@@ -1,0 +1,120 @@
+# iOS 原生工程
+
+这一步的目标是回答 **Gate 1 的三个未知点**，不是做业务。任一失败，"全自动读屏"就要改设计。
+
+## 为什么显示层是「通知 + 灵动岛」而不是悬浮窗
+
+你在 Windows 桌面版做的那个**半透明置顶悬浮窗，在 iOS 上做不到**——iOS 不提供跨 App 绘制的能力
+（Android 是 `TYPE_APPLICATION_OVERLAY`，桌面版是 tkinter 置顶窗，iOS 没有对应物）。
+这是系统限制，不是实现难度。iOS 上能盖在微信上的系统通道只有四个：
+
+| 通道 | 能盖在微信上 | 容量 | 交互 | 本工程 |
+|---|---|---|---|---|
+| 通知横幅 + 按钮 | ✅ | 3 条候选 + 一行判断 | ✅ 点按钮选候选 → 进剪贴板 | **已实现** |
+| 灵动岛 / 实时活动 | ✅ 常驻不遮挡 | 危险等级 + 最佳候选 1 条 | ❌ 只能看 | **已实现** |
+| 画中画窗口 | ✅ | 完整面板 | 有限 | 未做（App Store 灰色地带） |
+| 自定义键盘面板 | ✅ 占键盘位 | 完整面板 | ✅ | 未做（看不到对方消息，价值低） |
+
+两个一起用最接近悬浮窗体验：**灵动岛常驻显示危险等级和最佳候选，通知横幅负责让你点选**。
+
+## 怎么用
+
+### 1. 推到 GitHub
+
+工程里有 `.github/workflows/ios-unsigned.yml`。你需要把仓库推到 GitHub（**这一步必须你来做**，按 `CLAUDE.md` 第 7 条我不执行 `git commit`/`push`）：
+
+```bash
+git add ios .github tools docs
+git commit -m "feat(ios): Gate 1 采集探针 + 通知/灵动岛输出"
+git push
+```
+
+### 2. 手动跑一次 Action
+
+GitHub 仓库页 → **Actions** → 左侧选「iOS 未签名 IPA」→ **Run workflow**。
+`note` 可以填 `probe`。
+
+跑完在 **Artifacts** 里下载 `JevAssistant-unsigned-<note>`，里面是 `JevAssistant-unsigned.ipa`。
+
+> 第一步的日志会打印这台 runner 上有哪些 Xcode。**如果报 "没有 iOS 27+ SDK"，后面都会失败**——
+> 那是硬前提（ScreenCaptureKit 的 iOS 版从 27.0 起才有），需要换 runner 或自建。
+> 流水线里还有一步会验证 `UIBackgroundModes: screen-capture` 真的进了产物，没进就直接失败，
+> 免得装到手机上才白测一轮。
+
+### 3. 装到手机
+
+Windows 上用 **Sideloadly** 或 **AltStore**：
+
+1. 手机 U 盘连电脑
+2. Sideloadly 里选 `JevAssistant-unsigned.ipa`，填你的 Apple ID（建议用 App 专用密码）
+3. 装完在手机 **设置 → 通用 → VPN与设备管理** 里信任证书
+4. 免费账号签出来的 **7 天有效**，到期重签一次（AltStore 可以在同一 WiFi 下自动刷新）
+
+### 4. 跑 Gate 1 核对
+
+打开 App，点「开始采集」→ 系统弹出内容选择器 → 选**整个屏幕**。然后回答界面上列的问题：
+
+| # | 要回答的 | 怎么测 | 影响 |
+|---|---|---|---|
+| ① | 授权是否每次启动/每次都重新问？ | 点两次「开始采集」，看第二次是否还要重选 | 若要每次重选 → 退化成半自动 |
+| ② | 有没有录屏指示条常驻？ | 采集时看屏幕顶部/灵动岛 | 体验问题，你能否接受 |
+| ③ | 切到微信后还收帧吗？ | 开始采集 → 切到微信停 30 秒并滑动 → 回来读那行 | **命门**。收不到 → 全自动走不通 |
+
+③ 由代码自动判断并显示结论（录了进/出后台的帧数差，还会落盘，所以切后台期间的数据不丢）。
+①② 只能靠你看屏幕——界面上就是那两个选择题，选完截图给我。
+
+顺手点一下「弹一条带 3 个候选的通知」，验一下输出通道：点候选按钮后该候选会进剪贴板
+（**不发送**），回微信长按即可粘贴。
+
+### 5. 另外顺手记录两件事
+
+- **帧尺寸**（界面显示，例如 `1179×2556`）：决定一次感知调用的图片体积与成本
+- **切到微信 30 秒内大约收多少帧**：用来定抽帧率（现在是 2fps）
+
+## 工程结构
+
+```
+ios/
+  project.yml                  # XcodeGen 工程定义（不提交 .xcodeproj）
+  Shared/                      # App 与 widget 扩展共同编译
+    JevActivityAttributes.swift
+  Sources/                     # App target
+    App/JevApp.swift           # 入口 + 输出层自测
+    App/ProbeView.swift        # Gate 1 核对界面
+    Capture/CaptureController.swift   # SCContentSharingPicker + SCStream + 后台帧记账
+    Output/NotificationPresenter.swift # 通知横幅 + 3 个候选按钮
+    Output/LiveActivityController.swift # 灵动岛/实时活动
+  Widget/                      # widget 扩展 target
+    JevWidgetBundle.swift      # 灵动岛与锁屏的渲染
+```
+
+## 还没接的部分（下一轮）
+
+这一版**只验证采集与显示**，没有把感知和判断接进来。下一轮要做：
+
+1. **抽帧变化检测**（Tier 0）：现在每帧只记数。桌面版 `desktop/capture.py` 已经把
+   像素门 + 静默门验证过了，直接照搬思路即可——只在消息区像素变了才往下走。
+2. **感知调用**：把帧转 JPEG → 调 DeepSeek 视觉 → 结构化对话。provider 配置复用
+   `tools/jev/providers.json`（Swift 侧读同一个 JSON，别再写一份）。
+3. **判断 + 起草 + 排序**：`JevClient` 的 Swift 版，题目集从 `tools/jev/questions.json` 读，
+   按 `is_group` 选档案。
+4. **会话隔离与标题容错**：桌面版 `desktop/engine.py` 已经踩过这两个坑
+   （视觉模型会把标题读错，实测读出过「硅基妙妙屋(50)」和「硅基炒饭屋(50)」；
+   不隔离会话会让 state 混两个会话的内容）。iOS 侧同样需要，照搬。
+
+## 已知风险（诚实清单）
+
+| 风险 | 说明 |
+|---|---|
+| CI runner 可能没有 Xcode 27 | 流水线第一步就会失败并明确报出，不是静默出错 |
+| 免费签名可能不支持 `screen-capture` 后台模式 | 这正是 Gate 1 ③ 要回答的 |
+| Swift API 签名可能要微调 | `SCContentSharingPickerObserver` 是新协议，我只有文档级确认，没有编译器验证。首次云构建报签名不符时按提示改参数名即可 |
+| widget 扩展的嵌入方式 | XcodeGen 的 app-extension 配置未经实测。若 CI 在这一步失败，可以先删掉 `JevWidget` target 与 `LiveActivityController`，Gate 1 的采集验证不受影响 |
+
+## 与桌面版/安卓版的关系
+
+- **共享**：题目档案（`tools/jev/questions.json`）、provider 配置（`providers.json`）、
+  视觉 prompt（`tools/ios-spike/vlm_extract.py` 的 `SYSTEM_PROMPT`）、一致性规则（`consistency.py`）
+- **不共享**：采集层与显示层——这三端各自被平台限制约束，没有通用做法
+- 桌面版 `desktop/` 已经在调用 `tools/ios-spike/pipeline.py` 的
+  `pick_profile` / `to_python_state` / `judge` / `rank`，这些是**跨端共享契约，改动要同步**
