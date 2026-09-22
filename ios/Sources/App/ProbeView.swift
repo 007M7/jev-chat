@@ -43,6 +43,7 @@ struct ProbeView: View {
         Section {
             Toggle("自动分析", isOn: $bridge.autoAnalyze)
             Toggle("快速模式（只出判断，不生成候选）", isOn: $bridge.fastMode)
+            Toggle("安静模式（只在需要我回应或有风险时弹通知）", isOn: $bridge.quietNotifications)
 
             Picker("只跟随这个会话", selection: $store.followSessionKey) {
                 Text("不限制（屏幕上是什么就读什么）").tag(String?.none)

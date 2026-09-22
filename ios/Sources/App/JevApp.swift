@@ -85,9 +85,17 @@ final class AppBridge: ObservableObject {
     @Published var fastMode: Bool = false {
         didSet { UserDefaults.standard.set(fastMode, forKey: Self.kFast) }
     }
+    /// 通知策略：true = 只在"需要我回应"或"有风险"时才弹通知。
+    ///
+    /// 为什么需要：500 人的活跃群里每条消息都会触发分析，全都弹通知会把人淹了。
+    /// 记录仍然全部存下来（记录页可查），只是不打扰。
+    @Published var quietNotifications: Bool = true {
+        didSet { UserDefaults.standard.set(quietNotifications, forKey: Self.kQuiet) }
+    }
 
     private static let kAuto = "jev_auto_analyze"
     private static let kFast = "jev_fast_mode"
+    private static let kQuiet = "jev_quiet_notifications"
     /// 分析中的计时器：界面上显示"已 N 秒"，让"慢"变成可观察的数字而不是感觉
     private var progressTimer: Timer?
     private var analysisStartedAt: Date?
@@ -101,6 +109,9 @@ final class AppBridge: ObservableObject {
         }
         if UserDefaults.standard.object(forKey: Self.kFast) != nil {
             fastMode = UserDefaults.standard.bool(forKey: Self.kFast)
+        }
+        if UserDefaults.standard.object(forKey: Self.kQuiet) != nil {
+            quietNotifications = UserDefaults.standard.bool(forKey: Self.kQuiet)
         }
     }
 
@@ -233,6 +244,17 @@ final class AppBridge: ObservableObject {
                 // 结果走通知。有候选就带 3 个按钮；快速模式下没有候选，只弹结论。
                 let dangerText = String(format: "%.0f", a.danger)
                 let headline = "\(a.dangerLabel) \(dangerText)/9 · \(a.intentLabel) · \(a.actionAdvice)"
+
+                // 安静模式：只在"需要我回应"或"有风险"时才打扰（记录照存，不打断）
+                let needReply = a.shouldReplyNow >= 0.5
+                let risky = a.danger >= 4
+                if quietNotifications && !needReply && !risky && !force {
+                    status += "（不值得打扰，只记录不弹通知）"
+                    lastLatest[skey] = latestKey
+                    lastAnalysisAt = Date()
+                    finishAnalysis()
+                    return
+                }
                 if a.candidates.isEmpty {
                     notifications.presentVerdict(headline: headline, chatTitle: a.chatTitle)
                 } else {
