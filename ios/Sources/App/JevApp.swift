@@ -58,7 +58,14 @@ final class AppBridge: ObservableObject {
     /// 每个会话上一次分析过的消息签名：**内容级去重**。
     /// 像素会因噪声（光标、亮度、渲染差）微变，但"对话没变"就不该重复分析——
     /// 实测静默状态下会每分钟触发好几次，就是只做了像素级比对。
-    private var lastSignature: [String: String] = [:]
+    /// 每个会话**上一次分析过的最新消息**（发言人 + 文本）——真正的"有新消息才分析"。
+    ///
+    /// 为什么不用整段窗口的签名：那个判据不稳。群聊里消息滚动、截图边界变化、
+    /// 感知偶尔多读少读一条，签名就变了——即使最新那条消息根本没变也会重跑。
+    /// 实测：同一句「现在流行这样测智商」在同一分钟内被分析了两次，
+    /// 两条记录的发言人、"上文"完全一样。
+    /// Jev 判断的对象就是最新消息，所以去重判据就该是它。
+    private var lastLatest: [String: String] = [:]
     /// 两次分析之间的最小间隔，兜住像素噪声造成的连续触发
     private var lastAnalysisAt: Date?
     @Published private(set) var skippedAsRepeat = 0
@@ -119,7 +126,9 @@ final class AppBridge: ObservableObject {
             return
         }
         // 最小间隔：像素噪声（光标、亮度、渲染差）会让门在静默时反复放行，这里兜一层
-        let minInterval: TimeInterval = 12
+        // 正确性由"最新消息是否变化"保证，这里只防抖动。
+        // 从 12 秒降到 3 秒——否则真的来了新消息（间隔 5 秒）会被这个门挡掉。
+        let minInterval: TimeInterval = 3
         if let t = lastAnalysisAt, Date().timeIntervalSince(t) < minInterval {
             return
         }
@@ -168,17 +177,23 @@ final class AppBridge: ObservableObject {
                 // 2) **不是我要跟的那个会话**：用户在别的 App / 别的聊天里时不该产出结果。
                 //    实测踩过——用 QQ 发截图时，QQ 界面被当成群聊分析了三次。
                 let skey = store.sessionKey(for: a.chatTitle, isGroup: a.isGroup)
-                if let target = store.followSessionKey, target != skey {
+                if !force, let target = store.followSessionKey, target != skey {
                     skippedNotTarget += 1
                     status = "当前不在跟随的会话里（\(a.chatTitle)），已跳过"
                     finishAnalysis()
                     return
                 }
 
-                // 3) 内容没变：与上次分析过的同一会话消息签名相同
-                if let prev = lastSignature[skey], prev == a.messageSignature {
+                // 3) **没有新消息**：最新消息与上次分析的那条相同（发言人 + 文本）。
+                //    手动触发（force）时跳过这道判断——用户明确要求分析就该给结果。
+                //    "没读到对话"与"读到自己的通知"仍是硬拦截，因为那种结果本身就是错的。
+                //    判据刻意只看最新一条：Jev 判断的对象就是它，它没变就没有新东西可判。
+                //    用整段窗口做判据会抖动（消息滚动、截图边界、感知多读少读一条），
+                //    实测导致同一句话被重复分析。
+                let latestKey = "\(a.speaker ?? "")|\(a.latestText)"
+                if !force, let prev = lastLatest[skey], prev == latestKey {
                     skippedAsRepeat += 1
-                    status = "对话内容与上次相同，已跳过"
+                    status = "最新消息没有变化，已跳过（不是定时重复分析）"
                     finishAnalysis()
                     return
                 }
@@ -191,7 +206,7 @@ final class AppBridge: ObservableObject {
                     return
                 }
 
-                lastSignature[skey] = a.messageSignature
+                lastLatest[skey] = latestKey
                 lastAnalysisAt = Date()
 
                 // 记入本地记录（按会话分组，App 内可查）
