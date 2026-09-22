@@ -55,28 +55,33 @@ targets:
         # 否则在 iOS 26 设备上启动时 dyld 会因为找不到框架直接崩溃。
         # 代码侧由 `@available(iOS 27.0, *)` 保证不去碰它。
         OTHER_LDFLAGS: "-weak_framework ScreenCaptureKit"
-    dependencies:
-      - target: JevWidget
-        embed: true
-        codeSign: false
+    # 暂时不嵌 widget 扩展：免费账号下"自动 bundle ID"会把主 App 改名，
+    # 而扩展的 bundle ID 必须以上层 App 的 ID 为前缀，两者对不上就会被 iOS 判为结构不合法
+    # （表现为「不受信任的开发者」且信任条目生不出来）。
+    # 另外 Sideloadly 的"去掉扩展"那段代码在勾了其它 patch 选项时会崩（实测 Guru Meditation）。
+    # 所以改成构建侧直接不出扩展，等 Bundle ID 方案理清后再加回来。
+    # dependencies:
+    #   - target: JevWidget
+    #     embed: true
+    #     codeSign: false
 
-  # 实时活动（灵动岛/锁屏）必须由 widget 扩展渲染，App 只能更新数据。
-  # 这是本 target 存在的唯一原因。
-  JevWidget:
-    type: app-extension
-    platform: iOS
-    sources:
-      - path: Widget
-      - path: Shared
-    info:
-      path: Support/WidgetInfo.plist
-      properties:
-        CFBundleDisplayName: Jev 实时活动
-        CFBundleShortVersionString: "0.1"
-        CFBundleVersion: "1"
-        NSExtension:
-          NSExtensionPointIdentifier: com.apple.widgetkit-extension
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.jev.assistant.widget
-        GENERATE_INFOPLIST_FILE: "NO"
+#   # 实时活动（灵动岛/锁屏）必须由 widget 扩展渲染，App 只能更新数据。
+#   # 这是本 target 存在的唯一原因。
+#   JevWidget:
+#     type: app-extension
+#     platform: iOS
+#     sources:
+#       - path: Widget
+#       - path: Shared
+#     info:
+#       path: Support/WidgetInfo.plist
+#       properties:
+#         CFBundleDisplayName: Jev 实时活动
+#         CFBundleShortVersionString: "0.1"
+#         CFBundleVersion: "1"
+#         NSExtension:
+#           NSExtensionPointIdentifier: com.apple.widgetkit-extension
+#     settings:
+#       base:
+#         PRODUCT_BUNDLE_IDENTIFIER: com.jev.assistant.widget
+#         GENERATE_INFOPLIST_FILE: "NO"
