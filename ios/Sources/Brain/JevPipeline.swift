@@ -174,7 +174,15 @@ final class JevPipeline {
 
     // MARK: 主流程
 
-    func analyze(image: UIImage) async throws -> JevAnalysis {
+    /// 会话档案的取用时机很关键：**必须在感知拿到标题之后**。
+    /// 早期版本是调用方在分析前用"上一次的标题"猜档案——那会犯两个错：
+    /// 第一次分析没有档案；切换会话时会把**上一个会话**的身份信息注入进来，
+    /// 而注入错误的身份比不注入更糟（会稳定地把判断带偏）。
+    /// 所以这里把档案做成回调，等标题读到再问调用方要。
+    typealias ProfileProvider = (_ title: String, _ isGroup: Bool)
+        -> (relationship: String, memory: [String: Any]?)
+
+    func analyze(image: UIImage, profileProvider: ProfileProvider? = nil) async throws -> JevAnalysis {
         let t0 = Date()
 
         // ---- 1) 感知 ----
@@ -248,7 +256,13 @@ final class JevPipeline {
             throw JevError.config("questions.json 里没有 profiles.\(profileName)")
         }
         let calibrated = (profile["calibrated"] as? Bool) ?? true
-        let relationship = (profile["relationship_default"] as? String) ?? ""
+        let profileRelationship = (profile["relationship_default"] as? String) ?? ""
+        // 人工填的会话档案优先于配置里的默认措辞——这是"关系前提不再靠猜"的落点
+        // （题目集原本预设了亲密关系，群聊里根本没这层关系）。
+        // 注意：档案在这里才取，因为此刻才拿到标题，能取到**本次会话**的档案。
+        let ctx = profileProvider?(chatTitle, isGroup)
+        let relationship = (ctx?.relationship.isEmpty == false) ? (ctx?.relationship ?? "") : profileRelationship
+        let memory = ctx?.memory
 
         // ---- 3) 构造 state（群聊逐条带 sender）----
         var chatMsgs: [[String: Any]] = []
@@ -273,6 +287,9 @@ final class JevPipeline {
                 chat["distinct_speakers"] = senders.count
             }
         }
+        // 人工维护的人物/会话档案作为"历史记忆"注入。与对话蒸馏出来的记忆不同，
+        // 这是**人工权威值**，冲突时以它为准（见 docs/design/functional_spec.md）。
+        if let memory { chat["memory"] = memory }
         let state: [String: Any] = ["chat": chat]
 
         // ---- 4) 判断 ----
