@@ -33,9 +33,22 @@ final class ScreenCaptureEngine: NSObject {
     // MARK: 开始/停止
 
     /// 通过系统选择器取授权。这一步就是 iOS 的"同意采集"，不能静默开始。
+    ///
+    /// **必须先把 picker 激活（`isActive = true`），否则 `present()` 静默什么都不做** ——
+    /// 实测现象是"点了开始采集，什么面板都不弹"。Apple 的 iOS 示例在 present() 之前
+    /// 有一个 `activatePicker()` 步骤，作用就是设置这个属性：
+    ///   `picker.defaultConfiguration = ...; activatePicker(); picker.present()`
+    /// 我第一版漏了它，症状与用户反馈完全一致。
     func requestPermission() {
         let picker = SCContentSharingPicker.shared
-        picker.add(self)
+        picker.add(self)                 // 注册观察者，这样才能收到用户选定的 filter
+
+        // 不显示麦克风控制：我们要的是画面，收音频只会多要一个权限
+        var config = SCContentSharingPickerConfiguration()
+        config.showsMicrophoneControl = false
+        picker.defaultConfiguration = config
+
+        picker.isActive = true           // ← 关键，漏了它 present() 无效
         onStatus?("等待你在系统选择器里选「整个屏幕」…")
         picker.present()
     }
