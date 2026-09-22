@@ -31,6 +31,10 @@ struct JevAnalysis {
     /// 消息内容签名（对齐安卓 ChatModels.signature 的思路：取最后 6 条）。
     /// 用来做**内容级去重**：像素会因噪声微变，但"对话没变"就不该重复分析。
     var messageSignature: String
+    /// 这次分析用到的对话原文（最近 10 条，已带发言人标签）。
+    /// 导出到 PC 后用于：校准群聊题目集、蒸馏人物/会话记忆。
+    /// 只存文本，不含截图。
+    var transcript: [String]
 }
 
 enum JevError: LocalizedError {
@@ -554,7 +558,11 @@ final class JevPipeline {
             relationshipUsed: relationship,
             contextNotes: contextNotes,
             messageCount: recent.count,
-            messageSignature: Self.signature(of: recent)
+            messageSignature: Self.signature(of: recent),
+            transcript: recent.map { m in
+                let who = m.side == "me" ? "我" : (m.sender ?? "对方")
+                return "\(who)：\(m.text)"
+            }
         )
     }
 

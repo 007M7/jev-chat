@@ -29,6 +29,9 @@ struct StoredAnalysis: Codable, Identifiable {
     var perceptionSeconds: Double = 0
     var totalSeconds: Double = 0
     var fastMode: Bool = false
+    /// 这次分析用到的对话原文（最近 10 条，带发言人标签）。
+    /// 导出到 PC 后用于校准群聊题目集与蒸馏人物记忆——只存文本，不含截图。
+    var transcript: [String] = []
 }
 
 /// 会话档案：**人工填的身份信息**，注入判断层。

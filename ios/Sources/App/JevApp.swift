@@ -202,7 +202,7 @@ final class AppBridge: ObservableObject {
                     relationshipUsed: a.relationshipUsed, contextNotes: a.contextNotes,
                     profileName: a.profileName, calibrated: a.calibrated,
                     perceptionSeconds: a.perceptionSeconds, totalSeconds: a.totalSeconds,
-                    fastMode: fastMode
+                    fastMode: fastMode, transcript: a.transcript
                 )
                 store.add(rec)
 
