@@ -40,6 +40,10 @@ struct HistoryView: View {
                                         .font(.caption2).foregroundStyle(.secondary)
                                 }
                                 HStack(spacing: 5) {
+                                    if store.isFollowed(s.key) {
+                                        Label("跟随中", systemImage: "target")
+                                            .font(.caption2).bold().foregroundStyle(.blue)
+                                    }
                                     Text(store.lastPreview(in: s.key))
                                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                     Spacer(minLength: 4)
@@ -53,6 +57,16 @@ struct HistoryView: View {
                             }
                         }
                         .padding(.vertical, 2)
+                    }
+                    .swipeActions(edge: .leading) {
+                        // 在会话列表里直接切换"只读这个会话"——比去主页面下拉选好用
+                        Button {
+                            store.toggleFollow(s.key)
+                        } label: {
+                            Label(store.isFollowed(s.key) ? "取消跟随" : "只读这个",
+                                  systemImage: store.isFollowed(s.key) ? "target.slash" : "target")
+                        }
+                        .tint(store.isFollowed(s.key) ? .gray : .blue)
                     }
                 }
                 if !store.sessions.isEmpty {
@@ -246,6 +260,13 @@ struct SessionDetailView: View {
                             Text("上文：\(ctx)").font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                         }
                         Text(a.actionAdvice).font(.caption)
+                        // 逐条核对耗时用——界面上那行小字是静态预估，容易被误读成实测
+                        HStack(spacing: 8) {
+                            Text(String(format: "感知 %.1fs", a.perceptionSeconds))
+                            Text(String(format: "总 %.1fs", a.totalSeconds))
+                            if a.fastMode { Text("快速模式") }
+                        }
+                        .font(.caption2).foregroundStyle(.secondary)
                         // 语境透明度：模型以什么关系前提在判断
                         Text("档案 \(a.profileName) · 关系前提：\(a.relationshipUsed)")
                             .font(.caption2).foregroundStyle(.secondary).lineLimit(3)

@@ -70,20 +70,13 @@ final class AppBridge: ObservableObject {
     @Published var autoAnalyze: Bool {
         didSet { UserDefaults.standard.set(autoAnalyze, forKey: Self.kAuto) }
     }
-    /// **只跟随这个会话**（nil = 不限制）。
-    /// 这是"只要对应窗口的信息"的落点：iOS 拿不到前台 App 标识，
-    /// 但能通过会话标题判断"现在这个界面是不是我要跟的那个聊天"。
-    /// 实测踩过：用户在 QQ 里发截图时，QQ 的界面被当成群聊分析了三次。
-    @Published var followSessionKey: String? {
-        didSet { UserDefaults.standard.set(followSessionKey, forKey: Self.kFollow) }
-    }
+
     /// 快速模式：只出判断，不生成候选。实测能省掉约一半耗时（起草+排序占总耗时约一半）。
     @Published var fastMode: Bool {
         didSet { UserDefaults.standard.set(fastMode, forKey: Self.kFast) }
     }
 
     private static let kAuto = "jev_auto_analyze"
-    private static let kFollow = "jev_follow_session"
     private static let kFast = "jev_fast_mode"
 
     func setUp() {
@@ -93,7 +86,6 @@ final class AppBridge: ObservableObject {
         if UserDefaults.standard.object(forKey: Self.kAuto) != nil {
             autoAnalyze = UserDefaults.standard.bool(forKey: Self.kAuto)
         }
-        followSessionKey = UserDefaults.standard.string(forKey: Self.kFollow)
         if UserDefaults.standard.object(forKey: Self.kFast) != nil {
             fastMode = UserDefaults.standard.bool(forKey: Self.kFast)
         }
@@ -168,7 +160,7 @@ final class AppBridge: ObservableObject {
                 // 2) **不是我要跟的那个会话**：用户在别的 App / 别的聊天里时不该产出结果。
                 //    实测踩过——用 QQ 发截图时，QQ 界面被当成群聊分析了三次。
                 let skey = store.sessionKey(for: a.chatTitle, isGroup: a.isGroup)
-                if let target = followSessionKey, target != skey {
+                if let target = store.followSessionKey, target != skey {
                     skippedNotTarget += 1
                     status = "当前不在跟随的会话里（\(a.chatTitle)），已跳过"
                     isAnalyzing = false
@@ -203,7 +195,9 @@ final class AppBridge: ObservableObject {
                     intentLabel: a.intentLabel, intentConfidence: a.intentConfidence,
                     actionAdvice: a.actionAdvice, candidates: a.candidates, pickedIndex: nil,
                     relationshipUsed: a.relationshipUsed, contextNotes: a.contextNotes,
-                    profileName: a.profileName, calibrated: a.calibrated
+                    profileName: a.profileName, calibrated: a.calibrated,
+                    perceptionSeconds: a.perceptionSeconds, totalSeconds: a.totalSeconds,
+                    fastMode: fastMode
                 )
                 store.add(rec)
 

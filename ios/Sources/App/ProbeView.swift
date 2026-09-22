@@ -44,7 +44,7 @@ struct ProbeView: View {
             Toggle("自动分析", isOn: $bridge.autoAnalyze)
             Toggle("快速模式（只出判断，不生成候选）", isOn: $bridge.fastMode)
 
-            Picker("只跟随这个会话", selection: $bridge.followSessionKey) {
+            Picker("只跟随这个会话", selection: $store.followSessionKey) {
                 Text("不限制（屏幕上是什么就读什么）").tag(String?.none)
                 ForEach(store.sessions, id: \.key) { s in
                     Text(s.title).tag(String?.some(s.key))
@@ -99,7 +99,7 @@ struct ProbeView: View {
             if bridge.isAnalyzing {
                 HStack(spacing: 8) {
                     ProgressView()
-                    Text("分析中…（感知 4~7 秒，判断 1 秒，起草 2~7 秒）")
+                    Text("分析中…（一轮大约十几秒：视觉模型读屏幕最慢，约 4-7 秒）")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }

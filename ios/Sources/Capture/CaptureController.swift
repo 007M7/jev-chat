@@ -97,12 +97,25 @@ final class CaptureController: NSObject, ObservableObject {
             }
         }
         e.onStatus = { [weak self] s in
-            Task { @MainActor in self?.statusText = s }
+            Task { @MainActor in
+                guard let self else { return }
+                self.statusText = s
+                // 状态推进到"采集中"说明这次真的起来了——把上一条失败文案清掉。
+                // 实测踩过：旧错误与新状态并存（"启动采集失败: 无法开始流播放" + "采集中"），
+                // 让人以为现在还是坏的。
+                if s == "采集中" {
+                    self.lastError = nil
+                    self.isCapturing = true
+                }
+            }
         }
         e.onError = { [weak self] m in
             Task { @MainActor in
-                self?.lastError = m
-                self?.isCapturing = false
+                guard let self else { return }
+                self.lastError = m
+                self.isCapturing = false
+                // 失败时不能让状态栏继续显示"采集中"（否则界面自相矛盾）
+                self.statusText = "启动失败"
             }
         }
         engine = e

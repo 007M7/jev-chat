@@ -24,6 +24,11 @@ struct StoredAnalysis: Codable, Identifiable {
     var contextNotes: [String] = []
     var profileName: String = ""
     var calibrated: Bool = true
+    /// 这次分析的耗时明细。记下来是为了能逐条核对"到底慢在哪"——
+    /// 界面上那行小字是**静态预估**，容易被当成实测值误读。
+    var perceptionSeconds: Double = 0
+    var totalSeconds: Double = 0
+    var fastMode: Bool = false
 }
 
 /// 会话档案：**人工填的身份信息**，注入判断层。
@@ -86,6 +91,20 @@ final class AnalysisStore: ObservableObject {
     @Published private(set) var profiles: [String: SessionProfile] = [:]
     @Published private(set) var persons: [String: Person] = [:]
 
+    /// **只跟随这个会话**（nil = 不限制）。放在 store 里而不是 AppBridge，
+    /// 是为了让记录页也能直接改它（在会话列表里点「跟随」比去主页面下拉选更好用）。
+    @Published var followSessionKey: String? {
+        didSet { UserDefaults.standard.set(followSessionKey, forKey: Self.kFollow) }
+    }
+    static let kFollow = "jev_follow_session"
+
+    /// 这个会话是否正在被跟随
+    func isFollowed(_ key: String) -> Bool { followSessionKey == key }
+
+    func toggleFollow(_ key: String) {
+        followSessionKey = (followSessionKey == key) ? nil : key
+    }
+
     private let historyURL = AnalysisStore.docURL("jev_history.json")
     private let profileURL = AnalysisStore.docURL("jev_profiles.json")
     private let personURL = AnalysisStore.docURL("jev_persons.json")
@@ -95,7 +114,10 @@ final class AnalysisStore: ObservableObject {
             .appendingPathComponent(name)
     }
 
-    init() { load() }
+    init() {
+        load()
+        followSessionKey = UserDefaults.standard.string(forKey: Self.kFollow)
+    }
 
     // MARK: 会话键
     //
