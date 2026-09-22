@@ -18,6 +18,12 @@ if str(ROOT) not in sys.path:
 
 from jev_client import JevError, ask, redact_secrets  # noqa: E402
 from questions import JUDGE_QUESTIONS, build_state  # noqa: E402
+from questions_group import GROUP_QUESTIONS, build_group_state  # noqa: E402
+
+# 两套题目集（见 tools/jev/questions.json 的 profiles）。默认一对一；--questions group 切群聊。
+GROUP_NOUL_KEYS = ("asked_to_me", "need_reply", "topic_closed")
+GROUP_CHOICE_KEYS = ("asker_intent", "best_group_action", "need_from_me")
+GROUP_SCORE_KEYS = ("group_tension",)
 
 FIXTURE = ROOT / "fixtures" / "labeled_set.json"
 REPORT_DIR = ROOT / "report"
@@ -28,6 +34,18 @@ SLEEP_BETWEEN = 0.3
 
 
 def load_cases(limit: int | None) -> list[dict]:
+    if not FIXTURE.exists():
+        # 群聊那套的标注集要靠用户提供真实对话，缺它是常态——给可照做的指引，不要甩 traceback
+        raise SystemExit("\n".join([
+            f"缺少标注集：{FIXTURE}",
+            "",
+            "  群聊题目集标着 calibrated: false，修它需要真实标注数据。做法：",
+            "    1) 在 App 里跑一批群聊记录 → 导出（文件 App → 我的 iPhone → Jev 助手）",
+            "    2) python import_app_records.py --export <目录> --label-table out/group_labels.md",
+            "    3) 打开 out/group_labels.md，只改判错的行，把「你的答案」列填上",
+            f"    4) python apply_labels.py --table out/group_labels.md --out {FIXTURE}",
+            "    5) 再跑：python calibrate.py --questions group",
+        ]))
     with FIXTURE.open("r", encoding="utf-8") as fh:
         cases = json.load(fh)
     if not isinstance(cases, list):
@@ -311,7 +329,23 @@ def render_md(summary: dict, rows: list[dict]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Calibrate Jev questions on the labeled set")
     parser.add_argument("--limit", type=int, default=None, help="only run the first N cases")
+    parser.add_argument("--questions", choices=("one_on_one", "group"), default="one_on_one",
+                        help="用哪套题目集校准（群聊那套标着 calibrated:false，正是要靠这个修）")
+    parser.add_argument("--fixture", default=None,
+                        help="标注集路径；不传则按题目集选默认（群聊默认 fixtures/labeled_set_group.json）")
     args = parser.parse_args()
+
+    # 按题目集切换：题目、key 分类、state 构造器、默认标注集
+    global JUDGE_QUESTIONS, NOUL_KEYS, CHOICE_KEYS, SCORE_KEYS, build_state, FIXTURE
+    if args.questions == "group":
+        JUDGE_QUESTIONS = GROUP_QUESTIONS
+        NOUL_KEYS, CHOICE_KEYS, SCORE_KEYS = GROUP_NOUL_KEYS, GROUP_CHOICE_KEYS, GROUP_SCORE_KEYS
+        build_state = build_group_state
+        if args.fixture is None:
+            FIXTURE = ROOT / "fixtures" / "labeled_set_group.json"
+    if args.fixture:
+        FIXTURE = Path(args.fixture)
+    print(f"题目集: {args.questions}（{len(JUDGE_QUESTIONS)} 道题）　标注集: {FIXTURE.name}")
 
     cases = load_cases(args.limit)
     rows: list[dict] = []
