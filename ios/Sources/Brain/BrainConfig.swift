@@ -20,79 +20,76 @@ enum BrainConfig {
         return obj
     }
 
-    /// providers.json 里的一个 provider
+    /// 同 `loadJSON`，名字更明确：**只读包内**那份、不含用户覆盖层。
+    /// ProvidersStore 要用它拿"出厂默认值"来做 diff。
+    static func loadBundleJSON(_ name: String) -> [String: Any]? { loadJSON(name) }
+
+    /// providers.json 里的一个 provider（已合并用户覆盖层，模型已按角色解析）
     struct Provider {
         let id: String
+        let label: String
         let kind: String            // systemone | openai_chat
+        let apiFormat: String       // chat_completions | systemone
         let baseURL: String
         let path: String
         let model: String
         let apiKeyEnv: String
+        /// Keychain 里的账号名。自带 provider 等于 `api_key_env`（所以老用户已存的
+        /// 密钥继续有效）；用户自加的 provider 没有环境变量名，用生成的 `USER_<ID>`。
+        let keyAccount: String
         let apiKeyOptional: Bool
         let maxTokens: Int?
         let timeout: Double
         let extraHeaders: [String: String]
-
-        var url: String { baseURL.hasSuffix("/") ? String(baseURL.dropLast()) + path : baseURL + path }
+        let url: String
     }
 
-    /// 按角色取 provider。roles 里存的只是 provider id，真正的端点/模型在 providers 里。
+    /// 按角色取 provider。
+    ///
+    /// 端点、模型、启用位都来自 `ProvidersStore`（包内默认 + 用户在设置页改的覆盖层），
+    /// 所以用户在 App 里换个中转地址或换个模型，**不需要重新构建**。
     static func provider(role: String, override: String? = nil) -> Provider? {
-        guard let cfg = loadJSON("providers"),
-              let roles = cfg["roles"] as? [String: Any],
-              let providers = cfg["providers"] as? [String: Any] else { return nil }
-        let pid = override ?? (roles[role] as? String)
-        guard let id = pid, let p = providers[id] as? [String: Any] else { return nil }
+        let store = ProvidersStore.shared
+        let entry: ProvidersStore.ProviderEntry?
+        if let o = override {
+            entry = store.providers.first { $0.id == o }
+        } else {
+            entry = store.provider(for: role)
+        }
+        guard let e = entry else { return nil }
+        // 模型按**角色**解析（role_models），不是取 provider 的第一个：
+        // 「同一个服务，判断用 A 模型、起草用 B 模型」靠的就是这一步。
+        let model = override == nil ? store.model(for: role) : (e.enabledModels.first?.id ?? "")
         return Provider(
-            id: id,
-            kind: (p["kind"] as? String) ?? "",
-            baseURL: (p["base_url"] as? String) ?? "",
-            path: (p["path"] as? String) ?? "",
-            model: (p["model"] as? String) ?? "",
-            apiKeyEnv: (p["api_key_env"] as? String) ?? "",
-            apiKeyOptional: (p["api_key_optional"] as? Bool) ?? false,
-            maxTokens: p["max_tokens"] as? Int,
-            timeout: (p["timeout_default"] as? Double) ?? 60,
-            extraHeaders: (p["extra_headers"] as? [String: String]) ?? [:]
+            id: e.id,
+            label: e.displayName,
+            kind: e.kind,
+            apiFormat: e.apiFormat,
+            baseURL: e.baseURL,
+            path: store.effectivePath(e),
+            model: model,
+            apiKeyEnv: e.apiKeyEnv,
+            keyAccount: store.secretAccount(for: e),
+            apiKeyOptional: e.apiKeyOptional,
+            maxTokens: store.maxTokens(for: role) ?? e.maxTokens,
+            timeout: e.timeout,
+            extraHeaders: e.extraHeaders,
+            url: store.url(for: e)
         )
     }
 
-    /// 设置页要显示的密钥字段 = **当前被角色实际用到的 provider 所需的环境变量**。
+    /// 设置页要显示的密钥字段 = **所有 provider 的密钥账号**。
     ///
-    /// 只列三个角色（judge / analysis / perception）指向的 provider，
-    /// 不把配置里存在但没启用的 provider（例如备用的 openrouter_*）也列出来——
-    /// 否则用户会看到用不到的输入框，不知道该填哪个。
-    ///
-    /// 坑（实测踩过）：`api_key_optional` **缺失时必须当作 false（必需）**。
-    /// 曾经写成 `p["api_key_optional"] as? Bool, !optional`，没有该字段的 provider
-    /// 会因为 `as? Bool` 返回 nil 而被整个跳过，七个 provider 全被跳光，
-    /// 设置页一个输入框都不显示。
+    /// 以前只列三个角色实际用到的（免得给用户看用不上的输入框）。现在用户能自己加
+    /// provider、也能把角色指到任意一家，"用不到的"已经不存在了——全列才对。
+    /// 顺序上把角色正在用的排前面。
     static func allKeyNames() -> [String] {
-        guard let cfg = loadJSON("providers"),
-              let providers = cfg["providers"] as? [String: Any] else { return [] }
-
-        func envName(ofProvider id: String) -> String? {
-            guard let p = providers[id] as? [String: Any],
-                  let name = p["api_key_env"] as? String, !name.isEmpty else { return nil }
-            let isOptional = (p["api_key_optional"] as? Bool) ?? false
-            return isOptional ? nil : name
-        }
-
-        var names: [String] = []
-        let roles = (cfg["roles"] as? [String: Any]) ?? [:]
-        for role in ["judge", "analysis", "perception"] {
-            guard let pid = roles[role] as? String, let n = envName(ofProvider: pid) else { continue }
-            if !names.contains(n) { names.append(n) }
-        }
-
-        // 兜底：roles 没配全时，退回到"所有非可选 provider 的密钥"，
-        // 保证设置页永远不会空着（空着用户就没法填密钥）
-        if names.isEmpty {
-            for (id, _) in providers {
-                if let n = envName(ofProvider: id), !names.contains(n) { names.append(n) }
-            }
-        }
-        return names.sorted()
+        let store = ProvidersStore.shared
+        let active = ProvidersStore.roles.compactMap { store.provider(for: $0)?.keyAccount }
+        let all = store.providers.map(\.keyAccount).filter { !$0.isEmpty }
+        var out: [String] = []
+        for n in active + all where !out.contains(n) { out.append(n) }
+        return out
     }
 
     /// 感知层的 system prompt（来自 prompts.json，与 Python/桌面版同一份）

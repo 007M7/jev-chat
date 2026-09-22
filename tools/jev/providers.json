@@ -1,97 +1,127 @@
 {
-  "_comment": "provider 注册表。密钥一律不写在这里——只写『读取密钥的环境变量名』。改 provider 只改本文件，不需要动代码。",
-  "version": 1,
+  "_comment": "provider 注册表（跨端单一来源）。密钥**一律不写在这里**——只写『读取密钥的环境变量名』。App 里由用户在设置页填、存 Keychain；PC 上从环境变量读。",
+  "version": 2,
+  "_schema_note": "v2 是加法式升级：kind / path / model / max_tokens 这些 v1 字段全部保留，所以老的读取方（Python、桌面版）不改也能跑。新增的是 models[]（给设置页的模型列表用）与 role_models（每个角色用哪个模型）。",
+  "_overlay_note": "用户可以覆盖本文件而不改仓库：PC 上是 JEV_PROVIDERS_OVERLAY 指向的库外 JSON（默认 ~/.jev/providers.json）；iOS 上是 App 沙盒里的 jev_providers_user.json。覆盖按键合并，base_url / models / enabled / roles / role_models 都能改。",
+
+  "api_formats": {
+    "_comment": "设置页里「API 格式」下拉框的可选项。path 是该格式默认的路径后缀，kind 决定请求体怎么拼。",
+    "chat_completions": {
+      "label": "Chat Completions",
+      "path": "/chat/completions",
+      "kind": "openai_chat",
+      "hint": "OpenAI 兼容协议。DeepSeek、OpenRouter、Ollama、vLLM、LM Studio 等都走这个。"
+    },
+    "systemone": {
+      "label": "TypeSafe SystemOne",
+      "path": "/v1/systemone",
+      "kind": "systemone",
+      "hint": "Jev 判断专用协议，不是 OpenAI 兼容。请求体是 {model, state, questions}。"
+    }
+  },
+
   "roles": {
     "_comment": "每个角色指向一个 provider id。judge=Jev 判断，analysis=回复起草，perception=截图感知。",
     "judge": "typesafe",
-    "analysis": "deepseek_chat",
-    "perception": "deepseek_vision"
+    "analysis": "deepseek",
+    "perception": "deepseek"
   },
+
+  "role_models": {
+    "_comment": "每个角色用哪个模型（对应 provider 的 models[].id）。与 roles 分开，是为了「同一个服务，判断用 A 模型、起草用 B 模型」。留空则用该 provider 的第一个启用模型。",
+    "judge": "jev-latest",
+    "analysis": "deepseek-flash",
+    "perception": "deepseek-flash"
+  },
+
   "providers": {
     "typesafe": {
-      "kind": "systemone",
       "label": "TypeSafe 直连（Jev）",
+      "kind": "systemone",
+      "api_format": "systemone",
       "base_url": "https://api.typesafe.ai",
       "path": "/v1/systemone",
       "model": "jev-latest",
       "api_key_env": "JEV_API_KEY",
       "timeout_default": 30,
-      "note": "官方直连。model 可用 jev-latest（当前解析为 jev-1.13.0）。文档：https://docs.typesafe.ai/api.md"
+      "models": [
+        { "id": "jev-latest", "label": "jev-latest", "context": "—", "tags": ["判断"], "enabled": true }
+      ],
+      "note": "官方直连。jev-latest 当前解析为 jev-1.13.0。文档：https://docs.typesafe.ai/api.md"
     },
-    "openrouter_jev": {
-      "kind": "systemone",
-      "label": "OpenRouter 中转（Jev）",
-      "base_url": "https://openrouter.ai/api",
-      "path": "/alpha/decisions",
-      "model": "typesafe/jev-1.13",
-      "api_key_env": "OPENROUTER_API_KEY",
-      "timeout_default": 30,
-      "extra_headers": {
-        "HTTP-Referer": "https://github.com/Finderchangchang/jev-chat-JARVIS",
-        "X-Title": "Jev Assistant"
-      },
-      "note": "安卓版当前走这条。把 roles.judge 改成 openrouter_jev 即可切回。"
-    },
-    "deepseek_vision": {
+
+    "deepseek": {
+      "label": "DeepSeek",
       "kind": "openai_chat",
-      "label": "DeepSeek 视觉（截图感知）",
+      "api_format": "chat_completions",
       "base_url": "https://api.deepseek.com",
       "path": "/v1/chat/completions",
       "model": "deepseek-flash",
       "api_key_env": "DEEPSEEK_API_KEY",
       "timeout_default": 180,
       "max_tokens": 4000,
-      "note": "2026-09-21 实测能读中文聊天截图：给 670x60 的裁切图，正确答出图中消息原文「这个能有落地的伙伴嘛」。思考型模型——max_tokens 必须给足，否则推理 token 会吃光额度、正文返回空（deepseek-v4-pro 在 max_tokens=200 下就是空）。"
+      "models": [
+        { "id": "deepseek-flash", "label": "deepseek-flash", "context": "1M", "tags": ["视觉"], "enabled": true, "max_tokens": 4000 },
+        { "id": "deepseek-v4-pro", "label": "deepseek-v4-pro", "context": "1M", "tags": ["视觉"], "enabled": true, "max_tokens": 4000 }
+      ],
+      "note": "2026-09-21 实测能读中文聊天截图（给 670x60 的裁切图，正确答出图中消息原文）。两个模型都是思考型——max_tokens 必须给足，否则推理 token 会吃光额度、正文返回空（deepseek-v4-pro 在 max_tokens=200 下就是空）。可用模型以 /v1/models 的实际返回为准。"
     },
-    "deepseek_chat": {
+
+    "openrouter": {
+      "label": "OpenRouter（多模型聚合）",
       "kind": "openai_chat",
-      "label": "DeepSeek 起草（回复生成）",
-      "base_url": "https://api.deepseek.com",
-      "path": "/v1/chat/completions",
-      "model": "deepseek-flash",
-      "api_key_env": "DEEPSEEK_API_KEY",
-      "timeout_default": 180,
-      "max_tokens": 2000,
-      "note": "同一个 key，换模型即可。deepseek-v4-pro 推理更强但更慢更贵；账号当前可用模型只有 deepseek-flash 与 deepseek-v4-pro（实测 /v1/models 返回）。"
-    },
-    "local_deepseek": {
-      "kind": "openai_chat",
-      "label": "本机 OpenAI 兼容服务（备选）",
-      "base_url": "http://127.0.0.1:11434/v1",
-      "path": "/chat/completions",
-      "model": "deepseek-r1:latest",
-      "api_key_env": "LOCAL_LLM_API_KEY",
-      "api_key_optional": true,
-      "timeout_default": 300,
-      "note": "真的要在本机跑就把 roles 指过来并启动服务。Ollama 默认 11434，LM Studio 默认 1234，vLLM 默认 8000。2026-09-21 实测本机这些端口都没在跑。"
-    },
-    "openrouter_vision": {
-      "kind": "openai_chat",
-      "label": "多模态视觉（截图感知）",
+      "api_format": "chat_completions",
       "base_url": "https://openrouter.ai/api/v1",
       "path": "/chat/completions",
       "model": "qwen/qwen3-vl-32b-instruct",
       "api_key_env": "OPENROUTER_API_KEY",
       "timeout_default": 90,
       "extra_headers": {
-        "HTTP-Referer": "https://github.com/Finderchangchang/jev-chat-JARVIS",
-        "X-Title": "Jev Assistant iOS spike"
-      },
-      "note": "id 取自 https://openrouter.ai/api/v1/models 的实际返回。可换 qwen/qwen3-vl-8b-instruct（更便宜）或 z-ai/glm-4.6v。"
-    },
-    "openrouter_chat": {
-      "kind": "openai_chat",
-      "label": "OpenRouter 生成（回复起草）",
-      "base_url": "https://openrouter.ai/api/v1",
-      "path": "/chat/completions",
-      "model": "deepseek/deepseek-chat-v3.1",
-      "api_key_env": "OPENROUTER_API_KEY",
-      "timeout_default": 60,
-      "extra_headers": {
-        "HTTP-Referer": "https://github.com/Finderchangchang/jev-chat-JARVIS",
+        "HTTP-Referer": "https://github.com/007M7/jev-chat",
         "X-Title": "Jev Assistant"
       },
-      "note": "安卓版的默认生成模型。把 roles.analysis 改成它即可切回云端。"
+      "models": [
+        { "id": "qwen/qwen3-vl-32b-instruct", "label": "Qwen3-VL 32B Instruct", "context": "128K", "tags": ["视觉"], "enabled": true },
+        { "id": "qwen/qwen3-vl-8b-instruct", "label": "Qwen3-VL 8B Instruct", "context": "128K", "tags": ["视觉"], "enabled": false },
+        { "id": "z-ai/glm-4.6v", "label": "GLM-4.6V", "context": "128K", "tags": ["视觉"], "enabled": false },
+        { "id": "deepseek/deepseek-chat-v3.1", "label": "DeepSeek Chat v3.1", "context": "128K", "tags": [], "enabled": true }
+      ],
+      "note": "模型 id 取自 https://openrouter.ai/api/v1/models 的实际返回。想「更快的感知」可把 roles.perception 指到这里并选非思考型视觉模型——思考型会把时间花在整段推理上。"
+    },
+
+    "openrouter_jev": {
+      "label": "OpenRouter 中转（Jev）",
+      "kind": "systemone",
+      "api_format": "systemone",
+      "base_url": "https://openrouter.ai/api",
+      "path": "/alpha/decisions",
+      "model": "typesafe/jev-1.13",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "timeout_default": 30,
+      "extra_headers": {
+        "HTTP-Referer": "https://github.com/007M7/jev-chat",
+        "X-Title": "Jev Assistant"
+      },
+      "models": [
+        { "id": "typesafe/jev-1.13", "label": "jev-1.13", "context": "—", "tags": ["判断"], "enabled": true }
+      ],
+      "note": "安卓版走的这条。要切回它就把 roles.judge 改成 openrouter_jev。"
+    },
+
+    "local_openai": {
+      "label": "本机 OpenAI 兼容服务",
+      "kind": "openai_chat",
+      "api_format": "chat_completions",
+      "base_url": "http://127.0.0.1:11434",
+      "path": "/v1/chat/completions",
+      "model": "deepseek-r1:latest",
+      "api_key_env": "LOCAL_LLM_API_KEY",
+      "api_key_optional": true,
+      "timeout_default": 300,
+      "models": [
+        { "id": "deepseek-r1:latest", "label": "deepseek-r1", "context": "—", "tags": [], "enabled": true }
+      ],
+      "note": "真要本机跑就把 roles 指过来并启动服务。Ollama 默认 11434，LM Studio 默认 1234，vLLM 默认 8000。2026-09-21 实测本机这些端口都没在跑。"
     }
   }
 }

@@ -103,9 +103,13 @@ final class JevPipeline {
 
     private func headers(for p: BrainConfig.Provider) throws -> [String: String] {
         var h = ["Content-Type": "application/json"]
-        if !p.apiKeyEnv.isEmpty {
-            let k = KeychainStore.read(p.apiKeyEnv)
-            if k.isEmpty && !p.apiKeyOptional { throw JevError.missingKey(p.apiKeyEnv) }
+        // 用 keyAccount 而不是 apiKeyEnv：用户自加的 provider 没有环境变量名，
+        // 它的密钥账号是生成的。自带 provider 两者相同，老密钥不受影响。
+        if !p.keyAccount.isEmpty {
+            let k = KeychainStore.read(p.keyAccount)
+            if k.isEmpty && !p.apiKeyOptional {
+                throw JevError.missingKey("\(p.label)（\(p.keyAccount)）")
+            }
             if !k.isEmpty { h["Authorization"] = "Bearer \(k)" }
         }
         for (k, v) in p.extraHeaders { h[k] = v }

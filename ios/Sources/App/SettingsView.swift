@@ -1,72 +1,88 @@
 import SwiftUI
 
-/// 设置页：填各家 API 密钥（存 Keychain），以及看配置是否齐备。
+/// 设置页：入口是「Provider 与模型」，下面是当前指向的自检。
 ///
-/// 密钥字段是**按 providers.json 里声明的环境变量名自动生成**的，不在代码里写死
-/// ——加一家 provider 只需改配置，这一页会自动多出一个输入框。
+/// 密钥字段是**按 provider 的密钥账号自动生成**的，不在代码里写死——
+/// 用户自己加一家 provider，这一页会自动多出一个输入框。
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var store = ProvidersStore.shared
 
     @State private var values: [String: String] = [:]
     @State private var saved = false
+    @State private var showAdvanced = false
 
-    private let keyNames = BrainConfig.allKeyNames()
+    private var keyNames: [String] { BrainConfig.allKeyNames() }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    if keyNames.isEmpty {
-                        Text("providers.json 里没有声明任何密钥环境变量").foregroundStyle(.secondary)
+                    NavigationLink {
+                        ProvidersView()
+                    } label: {
+                        Label("Provider 与模型", systemImage: "server.rack")
                     }
-                    ForEach(keyNames, id: \.self) { name in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(name).font(.caption).foregroundStyle(.secondary)
-                            SecureField("粘贴密钥", text: binding(for: name))
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                                .font(.system(.footnote, design: .monospaced))
+                } footer: {
+                    Text("换服务、改 Base URL、选 API 格式、填密钥、维护模型列表都在这里。"
+                         + "改完不需要重新构建 App。")
+                }
+
+                Section("当前指向") {
+                    ForEach(ProvidersStore.roles, id: \.self) { role in
+                        if let p = BrainConfig.provider(role: role) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(ProvidersStore.roleLabel(role))
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Text("\(p.label) · \(p.model)").font(.footnote)
+                                Text(p.url).font(.system(size: 10)).foregroundStyle(.secondary)
+                                let ready = p.keyAccount.isEmpty || KeychainStore.has(p.keyAccount)
+                                Label(ready ? "密钥已就绪" : "缺少密钥（\(p.keyAccount)）",
+                                      systemImage: ready ? "checkmark.circle" : "exclamationmark.triangle")
+                                    .font(.caption2)
+                                    .foregroundStyle(ready ? .green : .orange)
+                            }
+                        } else {
+                            Text("\(role)：没有可用的 provider")
+                                .font(.footnote).foregroundStyle(.orange)
                         }
                     }
-                } header: {
-                    Text("API 密钥")
-                } footer: {
-                    Text("密钥只存在本机 Keychain（App 私有存储），不上传、不进日志。"
-                         + "字段名来自 providers.json 的 api_key_env，改配置就会增减。")
                 }
 
                 Section {
-                    Button {
-                        for name in keyNames { KeychainStore.save(values[name] ?? "", for: name) }
-                        saved = true
-                    } label: {
-                        Label("保存到 Keychain", systemImage: "key.fill")
-                    }
-                    if saved {
-                        Label("已保存", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green).font(.footnote)
-                    }
-                }
-
-                Section("当前 provider 指向") {
-                    ForEach(["judge", "analysis", "perception"], id: \.self) { role in
-                        if let p = BrainConfig.provider(role: role) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(role).font(.caption).foregroundStyle(.secondary)
-                                Text("\(p.id) · \(p.model)").font(.footnote)
-                                Text(p.url).font(.system(size: 10)).foregroundStyle(.secondary)
-                                Label(p.apiKeyEnv.isEmpty || KeychainStore.has(p.apiKeyEnv)
-                                      ? "密钥已就绪" : "缺少 \(p.apiKeyEnv)",
-                                      systemImage: p.apiKeyEnv.isEmpty || KeychainStore.has(p.apiKeyEnv)
-                                      ? "checkmark.circle" : "exclamationmark.triangle")
-                                    .font(.caption2)
-                                    .foregroundStyle(p.apiKeyEnv.isEmpty || KeychainStore.has(p.apiKeyEnv)
-                                                     ? .green : .orange)
+                    DisclosureGroup("按账号名直接填密钥（高级）", isExpanded: $showAdvanced) {
+                        if keyNames.isEmpty {
+                            Text("没有可填的密钥字段").foregroundStyle(.secondary)
+                        }
+                        ForEach(keyNames, id: \.self) { name in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack(spacing: 5) {
+                                    Text(name).font(.caption).foregroundStyle(.secondary)
+                                    if KeychainStore.has(name) {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .font(.caption2).foregroundStyle(.green)
+                                    }
+                                }
+                                SecureField("粘贴密钥", text: binding(for: name))
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .font(.system(.footnote, design: .monospaced))
                             }
-                        } else {
-                            Text("\(role)：providers.json 未配置").font(.footnote).foregroundStyle(.orange)
+                        }
+                        Button {
+                            for name in keyNames { KeychainStore.save(values[name] ?? "", for: name) }
+                            saved = true
+                        } label: {
+                            Label("保存到 Keychain", systemImage: "key.fill")
+                        }
+                        if saved {
+                            Label("已保存", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(.green).font(.footnote)
                         }
                     }
+                } footer: {
+                    Text("平时不用管这里——在「Provider 与模型」里逐家填更直观。"
+                         + "密钥只存本机 Keychain，不上传、不进日志、不随导出记录离开手机。")
                 }
             }
             .navigationTitle("设置")

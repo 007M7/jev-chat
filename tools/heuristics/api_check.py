@@ -27,13 +27,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# 被访问方 → (类型名, 声明所在文件, 哪些目录里这个别名才是那个共享对象)
-PROVIDERS: dict[str, tuple[str, Path, str]] = {
-    "store": ("AnalysisStore", ROOT / "ios/Sources/Brain/AnalysisStore.swift", "App"),
-    "bridge": ("AppBridge", ROOT / "ios/Sources/App/JevApp.swift", "App"),
-    "capture": ("CaptureController", ROOT / "ios/Sources/Capture/CaptureController.swift", "App"),
-    "JevPipeline": ("JevPipeline", ROOT / "ios/Sources/Brain/JevPipeline.swift", ""),
+# 被访问的别名 → 该别名"通常是哪个类型"（**只是兜底**）。
+#
+# 为什么需要兜底而不是写死：同一个名字在不同文件里指的不是同一个类型。
+# 例如 `store` 在记录页是 AnalysisStore、在 provider 编辑页是 ProvidersStore。
+# 写死会直接误报——这个坑踩过：新加 ProvidersStore 之后，检查器把 ProvidersView 里
+# 每一处 store.xxx 都报成"未在 AnalysisStore 里声明"，几十条假问题。
+# 所以优先**按文件解析**别名的真实类型（见 alias_types），解析不出来才用这里。
+DEFAULT_TYPE: dict[str, str] = {
+    "store": "AnalysisStore",
+    "bridge": "AppBridge",
+    "capture": "CaptureController",
+    "JevPipeline": "JevPipeline",
 }
+
+# 只有这些别名会被检查（避免把任意 obj.member 都拿来解析）
+ALIASES = tuple(DEFAULT_TYPE)
 
 INHERITED = {"objectWillChange", "shared", "description", "debugDescription", "hashValue"}
 
@@ -45,10 +54,43 @@ MODIFIERS = {
     "class", "nonisolated", "override", "mutating", "indirect", "lazy", "weak",
     "unowned", "convenience", "required", "dynamic", "(set)", "(get)",
 }
+SETTER_RE = re.compile(r"^(?:public|private|internal|fileprivate|open)\(set\)$")
+EXT_RE = re.compile(r"^extension\s+([A-Za-z_][A-Za-z0-9_.]*)")
 DECL_RE = re.compile(r"^(func|var|let|struct|enum|class|typealias|actor)\s+([A-Za-z_][A-Za-z0-9_]*)")
 ATTR_RE = re.compile(r"^@[A-Za-z_][A-Za-z0-9_]*(?:\([^()]*\))?")
 
-ACCESS_RE = re.compile(r"\b(" + "|".join(PROVIDERS) + r")\.([A-Za-z_][A-Za-z0-9_]*)")
+ACCESS_RE = re.compile(r"\b(" + "|".join(ALIASES) + r")\.([A-Za-z_][A-Za-z0-9_]*)")
+
+# 别名在某个文件里的类型来自哪：
+#   @ObservedObject private var store = AnalysisStore.shared
+#   @ObservedObject var store: ProvidersStore
+#   private let capture = CaptureController()
+ALIAS_DECL_RE = re.compile(
+    r"^\s*(?:(?:@\w+(?:\([^()]*\))?"
+    r"|(?:public|internal|private|fileprivate|open|final|static|class|nonisolated|override|lazy|weak|unowned|mutating|indirect)\b"
+    r"|\(set\)|\(get\))\s+)*"
+    r"(?:var|let)\s+(" + "|".join(ALIASES) + r")\s*(?::\s*([A-Za-z_][A-Za-z0-9_.]*)|=\s*([A-Za-z_][A-Za-z0-9_]*))")
+
+def alias_types(src: str) -> dict[str, str]:
+    """这个文件里 `store` / `bridge` / … 各是什么类型。
+
+    两种写法都认：类型标注（`var store: ProvidersStore`）与初始化式
+    （`var store = ProvidersStore.shared`）。后者常见于 `@ObservedObject`。
+    """
+    out: dict[str, str] = {}
+    for line in src.splitlines():
+        m = ALIAS_DECL_RE.match(line)
+        if not m:
+            continue
+        alias = m.group(1)
+        typ = m.group(2) or m.group(3) or ""
+        # `= AnalysisStore.shared` 会匹配到 AnalysisStore；去模块前缀与泛型
+        typ = typ.split("<")[0].strip()
+        if typ in ALIASES:      # 形如 var store = store，忽略
+            continue
+        if typ and alias not in out:
+            out[alias] = typ
+    return out
 
 
 def strip_literals_and_comments(text: str) -> str:
@@ -101,34 +143,87 @@ def strip_literals_and_comments(text: str) -> str:
     return "".join(out)
 
 
-def declared_members(path: Path) -> dict[str, set[str]]:
-    """{成员名: {kind, ...}}，只看缩进恰好 4 空格的一层成员。"""
-    out: dict[str, set[str]] = {}
+def strip_modifiers(line: str) -> str:
+    """逐段剥掉 @属性 与修饰符，露出声明关键字开头的部分。
+
+    坑：`class` 既可能是类型声明（`class Foo`）又可能是修饰符（`class func`）。
+    一律当修饰符剥掉的话，`final class AnalysisStore {` 会被剥成
+    `AnalysisStore: ObservableObject {`，于是**所有类型都认不出来**（踩过）。
+    所以 `class` 只在后面跟 func/var/let 时才当修饰符。
+    """
+    rest = line.lstrip()
+    while True:
+        m = ATTR_RE.match(rest)
+        if m:
+            rest = rest[m.end():].lstrip()
+            continue
+        parts = rest.split()
+        if not parts:
+            break
+        head = parts[0]
+        # private(set) / public(set)：带括号的访问级别修饰符，正则式的 MODIFIERS 覆盖不到
+        if SETTER_RE.match(head):
+            rest = rest[len(head):].lstrip()
+            continue
+        if head in DECL_KINDS:
+            if head == "class" and len(parts) > 1 and parts[1] in ("func", "var", "let"):
+                rest = rest[len(head):].lstrip()
+                continue
+            break
+        if head in MODIFIERS:
+            rest = rest[len(head):].lstrip()
+            continue
+        break
+    return rest
+
+
+def collect_members(path: Path) -> dict[str, dict[str, set[str]]]:
+    """扫一个文件，返回 {类型名: {成员名: {kind}}}。
+
+    **按缩进栈归位**：成员挂在包含它的那个类型上，而不是"所有缩进 4 行的都算
+    AnalysisStore 的成员"。这一步是必要的——写死类型名会让新加的类型全部误报
+    （ProvidersStore 加进来时踩过）。
+    """
+    out: dict[str, dict[str, set[str]]] = {}
     if not path.exists():
         return out
     src = strip_literals_and_comments(path.read_text(encoding="utf-8"))
+    stack: list[tuple[str, int]] = []      # (类型名, 声明行的缩进)
+
+    def add(type_name: str, member: str, kind: str) -> None:
+        out.setdefault(type_name, {}).setdefault(member, set()).add(kind)
+
     for line in src.splitlines():
-        if not line.startswith("    ") or line.startswith("     "):
+        if not line.strip():
             continue
-        rest = line[4:]
-        # 逐段剥掉 @属性 和修饰符，直到露出声明关键字
-        while True:
-            m = ATTR_RE.match(rest)
-            if m:
-                rest = rest[m.end():].lstrip()
-                continue
-            head = rest.split(" ", 1)[0].split("(", 1)[0]
-            if head in MODIFIERS and rest:
-                cut = rest.find(" ")
-                if cut < 0:
-                    break
-                rest = rest[cut + 1:].lstrip()
-                continue
-            break
-        m = DECL_RE.match(rest)
-        if m:
-            out.setdefault(m.group(2), set()).add(m.group(1))
+        indent = len(line) - len(line.lstrip())
+        body = strip_modifiers(line)
+        # 退出已经结束的作用域
+        while stack and stack[-1][1] >= indent:
+            stack.pop()
+
+        # `extension Foo { … }`：成员属于 Foo，当成它的作用域继续收集。
+        # 漏掉扩展会让"在扩展里声明的成员"被判成未声明——那是假问题。
+        ext = EXT_RE.match(body)
+        if ext:
+            stack.append((ext.group(1).split(".")[-1], indent))
+            continue
+
+        m = DECL_RE.match(body)
+        if not m:
+            continue
+        kind, name = m.group(1), m.group(2)
+
+        if stack and indent > stack[-1][1]:
+            add(stack[-1][0], name, kind)
+        if kind in ("struct", "enum", "class", "actor", "protocol", "typealias"):
+            stack.append((name, indent))
+            out.setdefault(name, {})
     return out
+
+
+def declared_members(path: Path, type_name: str) -> dict[str, set[str]]:
+    return collect_members(path).get(type_name, {})
 
 
 def type_scopes(files: list[Path]) -> tuple[dict[str, str], dict[str, str]]:
@@ -156,23 +251,38 @@ def type_scopes(files: list[Path]) -> tuple[dict[str, str], dict[str, str]]:
 
 def main() -> int:
     problems: list[str] = []
-    tables = {a: (t, declared_members(p), prefix) for a, (t, p, prefix) in PROVIDERS.items()}
-    for alias, (tname, table, _) in tables.items():
-        if not table:
-            problems.append(f"{alias}: 读不到 {tname} 的成员声明（{PROVIDERS[alias][1]} 不存在或格式变了）")
-
     files = sorted((ROOT / "ios/Sources").rglob("*.swift"))
+
+    # 所有文件的所有类型成员表。别名指向哪个类型**按文件解析**，不写死。
+    members_by_file: dict[str, dict[str, dict[str, set[str]]]] = {}
+    all_types: dict[str, dict[str, set[str]]] = {}
+    for f in files:
+        rel = f.relative_to(ROOT).as_posix()
+        table = collect_members(f)
+        members_by_file[rel] = table
+        for tname, members in table.items():
+            all_types.setdefault(tname, {}).update(members)
+
+    missing_default = [a for a, t in DEFAULT_TYPE.items() if t not in all_types]
+    for alias in missing_default:
+        problems.append(
+            f"兜底类型 {DEFAULT_TYPE[alias]}（别名 {alias}）在任何文件里都找不到成员声明")
+
     checked = 0
+    resolved_files = 0
     for f in files:
         rel = f.relative_to(ROOT).as_posix()
         src = strip_literals_and_comments(f.read_text(encoding="utf-8"))
+        local = alias_types(src)
+        if local:
+            resolved_files += 1
         for lineno, line in enumerate(src.splitlines(), 1):
             for m in ACCESS_RE.finditer(line):
                 alias, member = m.group(1), m.group(2)
-                tname, table, scope = tables[alias]
-                if scope and f"/{scope}/" not in "/" + rel:
-                    continue  # 这个文件里的 `capture` 是别的东西，不是我们的单例
-                if member in INHERITED or not table:
+                # 优先用本文件声明的类型；没有声明才退回兜底类型
+                tname = local.get(alias) or DEFAULT_TYPE[alias]
+                table = all_types.get(tname)
+                if not table or member in INHERITED:
                     continue
                 checked += 1
                 kinds = table.get(member)
@@ -188,7 +298,8 @@ def main() -> int:
                 elif not called and kinds == {"func"}:
                     problems.append(f"{rel}:{lineno}: {alias}.{member} 是 func，但被当属性用")
 
-    print(f"检查了 {len(files)} 个文件、{checked} 处成员访问")
+    print(f"检查了 {len(files)} 个文件、{checked} 处成员访问"
+          f"（{resolved_files} 个文件里的别名按本文件声明的类型解析，其余用兜底类型）")
 
     # ---- 嵌套类型 vs 顶层类型的用法 ----
     top, nested = type_scopes(files)
