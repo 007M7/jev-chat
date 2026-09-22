@@ -1,0 +1,182 @@
+name: iOS SDK 探针
+
+# 为什么需要它：本机是 Windows，没有 Xcode，而"某个 API 在 iOS 27 的
+# ScreenCaptureKit 里到底有没有、签名是什么"这类问题**只能靠真 SDK 回答**。
+# 猜的代价很实在——之前 `minimumFrameInterval` / `showsCursor` / `allowedPickerModes`
+# 都是先写了代码、再等十分钟云构建报 'unavailable in iOS' 才知道。
+# 这个 workflow 把 SDK 的 .swiftinterface 直接 grep 出来，几秒钟就有答案。
+#
+# 只读、不改仓库产物。手动触发，可传要搜的关键字。
+on:
+  workflow_dispatch:
+    inputs:
+      pattern:
+        description: 要搜索的关键字（正则，egrep 语法）
+        required: false
+        default: SCContentFilter|SCContentSharingPicker|NSSecureCoding|NSCoding
+      context:
+        description: 每条命中前后各带几行
+        required: false
+        default: "0"
+
+jobs:
+  probe:
+    runs-on: xcode-27
+    timeout-minutes: 15
+    steps:
+      - name: 选择 Xcode
+        run: |
+          set -euo pipefail
+          pick=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
+          echo "用 $pick"
+          sudo xcode-select -s "$pick"
+          xcodebuild -version
+
+      - name: 定位 iOS SDK 里的 ScreenCaptureKit 接口文件
+        id: find
+        run: |
+          set -euo pipefail
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDK=$SDK"
+          echo "sdk=$SDK" >> "$GITHUB_OUTPUT"
+          echo "--- SDK 版本 ---"
+          plutil -p "$SDK/SDKSettings.plist" 2>/dev/null | grep -Ei '"Version"|DisplayName' || true
+          echo "--- ScreenCaptureKit 的接口文件 ---"
+          find "$SDK/System/Library/Frameworks/ScreenCaptureKit.framework" \
+               -name '*.swiftinterface' -o -name '*.h' -o -name '*.apinotes' 2>/dev/null | head -20
+          # Swift 接口可能内联在 SwiftUI/其它框架里，另一个可能的位置：
+          find "$SDK/usr/lib/swift" -maxdepth 2 -name 'ScreenCaptureKit*' 2>/dev/null | head
+
+      - name: 关键字搜索
+        env:
+          PATTERN: ${{ inputs.pattern }}
+          CTX: ${{ inputs.context }}
+        run: |
+          SDK="${{ steps.find.outputs.sdk }}"
+          files=$(find "$SDK/System/Library/Frameworks/ScreenCaptureKit.framework" \
+                   -name '*.swiftinterface' 2>/dev/null)
+          if [ -z "$files" ]; then
+            echo "!! 没找到 .swiftinterface，改用头文件/模块图"
+            files=$(find "$SDK/System/Library/Frameworks/ScreenCaptureKit.framework" \
+                     \( -name '*.h' -o -name '*.modulemap' \) 2>/dev/null)
+          fi
+          echo "搜索文件："; echo "$files"
+          echo
+          if [ "${CTX:-0}" -gt 0 ] 2>/dev/null; then
+            grep -nE -B"$CTX" -A"$CTX" "${PATTERN:-.}" $files | head -400 || true
+          else
+            grep -nE "${PATTERN:-.}" $files | head -400 || true
+          fi
+
+      # ★ 这一步是重点：**用真 SDK 做类型检查**，而不是靠推断 Swift 名字。
+      # ObjC 方法导入 Swift 后的确切名字（如 presentPickerUsingContentStyle:
+      # 到底是 presentPicker(usingContentStyle:) 还是别的）无法从头文件直读，
+      # 猜错的代价是十分钟起步的一次云构建失败。这里 40 秒就能给出确切答案。
+      - name: 用真 SDK 类型检查一段用了这些 API 的代码
+        run: |
+          SDK="${{ steps.find.outputs.sdk }}"
+          cat > /tmp/typecheck.swift <<'SWIFT'
+          import ScreenCaptureKit
+          import UIKit
+
+          @available(iOS 27.0, *)
+          func probe(_ picker: SCContentSharingPicker) {
+            // 下面每一行都是 App 里真的用到的调用，逐一确认「名字」与「可用性」
+            let _: Bool = picker.isAvailable
+            picker.isActive = true
+            var cfg = SCContentSharingPickerConfiguration()
+            cfg.showsMicrophoneControl = false
+            cfg.showsCameraControl = false
+            picker.defaultConfiguration = cfg
+            picker.present()
+          }
+
+          @available(iOS 27.0, *)
+          final class NoopObserver: NSObject, SCContentSharingPickerObserver {
+            func contentSharingPicker(_ p: SCContentSharingPicker,
+                                      didUpdateWith f: SCContentFilter, for s: SCStream?) {}
+            func contentSharingPicker(_ p: SCContentSharingPicker, didCancelFor s: SCStream?) {}
+            func contentSharingPickerStartDidFailWithError(_ e: Error) {}
+          }
+          SWIFT
+          echo "===== 待类型检查的代码 ====="
+          cat -n /tmp/typecheck.swift
+          echo
+          echo "===== swiftc 结果 ====="
+          # 只做类型检查，不产出二进制。有 error: 行说明名字/可用性有问题。
+          # 实测它已经抓到过一次：presentPicker(usingContentStyle:) 这个名字根本不存在。
+          xcrun swiftc -typecheck -sdk "$SDK" -target arm64-apple-ios27.0 \
+               /tmp/typecheck.swift 2>&1
+          echo "（上面没有 error: 行就是全通过）"
+
+      # 查"某段 ObjC API 导入 Swift 后的确切名字"。typecheck 只会说"没有这个成员"，
+      # 不告诉你正确名字，所以这里把候选拼法逐个试一遍——**哪一行没有 error，
+      # 哪个就是正确名字**。一次探针（约 50 秒）就能得到确定答案。
+      - name: 逐个试候选的 Swift 名字
+        continue-on-error: true
+        run: |
+          SDK="${{ steps.find.outputs.sdk }}"
+          cat > /tmp/names.swift <<'SWIFT'
+          import ScreenCaptureKit
+
+          @available(iOS 27.0, *)
+          func c1(_ p: SCContentSharingPicker) { p.presentPicker(using: .display) }
+          @available(iOS 27.0, *)
+          func c2(_ p: SCContentSharingPicker) { p.presentPicker(usingContentStyle: .display) }
+          @available(iOS 27.0, *)
+          func c3(_ p: SCContentSharingPicker) { p.presentPickerUsingContentStyle(.display) }
+          @available(iOS 27.0, *)
+          func c4(_ p: SCContentSharingPicker) { p.present(using: .display) }
+          @available(iOS 27.0, *)
+          func c5(_ p: SCContentSharingPicker) { p.presentPicker(usingContentStyle: SCShareableContentStyle.display) }
+          SWIFT
+          echo "候选：c1 presentPicker(using:)　c2 presentPicker(usingContentStyle:)　"
+          echo "      c3 presentPickerUsingContentStyle(_:)　c4 present(using:)　c5 同 c2 显式类型"
+          echo
+          echo "===== 逐个 typecheck（按 c1..c5 分别报错）====="
+          for n in 1 2 3 4 5; do
+            printf "c%s: " "$n"
+            if out=$(xcrun swiftc -typecheck -sdk "$SDK" -target arm64-apple-ios27.0 \
+                     /tmp/names.swift 2>&1); then
+              echo "全通过（说明这一段里没有错的拼法）"
+              break
+            fi
+            # 只留下与这一行相关的诊断，其余的（例如别的候选报错）不误导
+            hit=$(echo "$out" | grep -E "names\.swift:[0-9]+:[0-9]+: error" | sed -n "${n}p")
+            if [ -z "$hit" ]; then echo "✅ 没有报错"; else echo "❌ $hit"; fi
+          done
+          echo
+          echo "===== 完整诊断（供核对）====="
+          xcrun swiftc -typecheck -sdk "$SDK" -target arm64-apple-ios27.0 /tmp/names.swift 2>&1
+          echo "（完）"
+
+      - name: 打印 ScreenCaptureKit 的完整可用面
+        run: |
+          SDK="${{ steps.find.outputs.sdk }}"
+          FW="$SDK/System/Library/Frameworks/ScreenCaptureKit.framework"
+
+          # 关键：**不能只看 .swiftinterface**。Swift 界面里的成员可能带 macOS-only
+          # 标注（`allowedPickerModes` 就是先写了代码才在云构建上发现 iOS 不可用），
+          # 所以要把头文件里的 API_AVAILABLE 一起看——那里才写清了 ios(27.0) 还是 macos(15.0)。
+
+          swift_if=$(find "$FW" -name '*.swiftinterface' | head -1)
+          echo "############ swiftinterface 全文 ############"
+          echo "# 文件：$swift_if"
+          echo "# 总行数：$(wc -l < "$swift_if")（下面最多打 700 行）"
+          cat -n "$swift_if" | head -700
+
+          for h in SCContentSharingPicker.h SCShareableContent.h; do
+            echo
+            echo "############ Headers/$h （前 400 行）############"
+            cat -n "$FW/Headers/$h" 2>/dev/null | head -400
+          done
+
+          echo
+          echo "############ 头文件里所有 API_AVAILABLE 行（看 iOS/macOS 归属）############"
+          grep -rhn "API_AVAILABLE\|API_UNAVAILABLE" "$FW/Headers/" 2>/dev/null | head -200
+
+          echo
+          echo "############ 搜 persist / selectedFilter / NSSecureCoding / NSCoding ############"
+          grep -rn "persist\|Persist\|selectedFilter\|NSSecureCoding\|NSCoding\|archive" \
+               "$FW/Headers/" "$swift_if" 2>/dev/null | head -80
+          echo "（以上为全部命中）"

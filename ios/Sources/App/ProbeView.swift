@@ -1,0 +1,214 @@
+import SwiftUI
+
+/// 主页面（实际使用）。
+///
+/// 刻意只留三块：**采集控制**、**最近一次分析结果**、折叠起来的**诊断**。
+/// Gate 1 那套核对清单是验证期的东西，验证完就不该占着主界面——
+/// 现在收进「诊断」折叠区，需要时展开还能用。
+struct ProbeView: View {
+    @ObservedObject var capture: CaptureController
+    @ObservedObject var bridge: AppBridge
+    @ObservedObject private var store = AnalysisStore.shared
+
+    @State private var showSettings = false
+    @State private var showDiagnostics = false
+    /// 诊断里对 ①② 的观察结论（Gate 1 验证期用过，保留着）
+    @State private var permissionAskedAgain: String = "未观察"
+    @State private var indicatorSeen: String = "未观察"
+    @State private var indicatorNote: String = ""
+
+    var body: some View {
+        NavigationStack {
+            List {
+                captureSection
+                behaviorSection
+                analysisSection
+                diagnosticsSection
+            }
+            .navigationTitle("Jev")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showSettings = true } label: {
+                        Label("设置", systemImage: "gearshape")
+                    }
+                }
+            }
+            .sheet(isPresented: $showSettings) { SettingsView() }
+        }
+    }
+
+    // MARK: 行为（用户自己决定读不读、读哪个）
+
+    private var behaviorSection: some View {
+        Section {
+            Toggle("自动分析", isOn: $bridge.autoAnalyze)
+            Toggle("快速模式", isOn: $bridge.fastMode)
+            Toggle("安静模式（只在需要我回应或有风险时弹通知）", isOn: $bridge.quietNotifications)
+
+            Picker("只跟随这个会话", selection: $store.followSessionKey) {
+                Text("不限制（屏幕上是什么就读什么）").tag(String?.none)
+                ForEach(store.sessions, id: \.key) { s in
+                    Text(s.title).tag(String?.some(s.key))
+                }
+            }
+
+            Button("用最近一帧立刻分析一次") {
+                if let img = capture.lastFrame { bridge.analyzeNow(img) }
+            }
+            .disabled(capture.lastFrame == nil || bridge.isAnalyzing)
+        } header: {
+            Text("读什么")
+        } footer: {
+            Text("「只跟随这个会话」是给「我一边在微信聊天、一边又去用别的 App」这种情况准备的："
+                 + "不定死目标时，屏幕上任何像聊天的界面（比如你在 QQ 里翻截图）都会被当成对话分析。")
+            + Text("\n\n快速模式跳过「起草候选 + 排序」两步，只出判断。"
+                   + "实测这两步占 3～8 秒（起草 2.2~7.0s、排序 0.9~1.1s），"
+                   + "关闭后总耗时约少三分之一，也省掉约 600 个输出 token。"
+                   + "适合你只想先知道「该不该回、有没有风险」、打算自己写回复的时候。"
+                   + "注意：耗时的**大头是感知**（4.4~15.5s，视觉模型读屏），快速模式动不了它。")
+            + Text("\n\n安静模式不影响记录——判定不值得打扰时照样把分析记下来，只是不弹通知。")
+        }
+    }
+
+    // MARK: 采集
+
+    private var captureSection: some View {
+        Section {
+            LabeledContent("状态", value: capture.statusText)
+            if !capture.isCapturing {
+                Text("开始采集后切到微信正常聊天即可，结果会以通知形式弹出。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+            if capture.isCapturing {
+                LabeledContent("已采集", value: "\(capture.totalFrames) 帧 · 最近 \(capture.lastFrameAgo)")
+            }
+            if let err = capture.lastError {
+                Text(err).font(.footnote).foregroundStyle(.red)
+            }
+            if !capture.captureSupported {
+                Text("此系统不支持采集（ScreenCaptureKit 需要 iOS 27）。升级后同一个包自动具备能力。")
+                    .font(.footnote).foregroundStyle(.orange)
+            }
+
+            if capture.isCapturing {
+                Button("停止采集", role: .destructive) { capture.stop() }
+                Text("停止后授权会保留，再点开始不会重新弹确认。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } else {
+                Button("开始采集") { capture.requestPermissionAndStart() }
+                    .disabled(!capture.captureSupported)
+            }
+
+            Button("重新选择采集目标") { capture.reselectTarget() }
+                .disabled(!capture.captureSupported)
+            Text("iOS 只允许通过系统的共享选择器授权屏幕采集，而且**没有**保存授权的接口"
+                 + "（已查 iOS 27 SDK：ScreenCaptureKit 里没有持久化 API，"
+                 + "SCShareableContent 在 iOS 上不可用）。"
+                 + "所以：每次重开 App 需要确认一次；在 App 没退出时开始/停止不再重复确认。")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: 最近一次分析
+
+    private var analysisSection: some View {
+        Section("最近一次分析") {
+            if bridge.isAnalyzing {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("分析中…（一轮大约十几秒：视觉模型读屏幕最慢，约 4-7 秒）")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            Text(bridge.status).font(.footnote).foregroundStyle(.secondary)
+
+            if let err = bridge.lastError {
+                Text(err).font(.footnote).foregroundStyle(.red)
+            }
+
+            if let a = bridge.latest {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(a.chatTitle).font(.caption).foregroundStyle(.secondary)
+                    Text(a.latestText.isEmpty ? "（无文本消息）" : a.latestText)
+                        .font(.subheadline).bold()
+                    if let sp = a.speaker {
+                        Text("来自 \(sp)" + (a.contextLine.map { " · 上文：\($0)" } ?? ""))
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if let ctx = a.contextLine {
+                        Text("上文：\(ctx)").font(.caption).foregroundStyle(.secondary)
+                    }
+
+                    HStack(spacing: 8) {
+                        Text("\(a.dangerLabel) \(String(format: "%.0f", a.danger))/9")
+                            .font(.caption).bold()
+                            .foregroundStyle(a.danger < 3 ? .green : (a.danger < 6 ? .orange : .red))
+                        Text(a.intentLabel).font(.caption).bold()
+                        Text(String(format: "把握 %.0f%%", a.intentConfidence * 100))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Text(a.actionAdvice).font(.footnote)
+
+                    Divider()
+                    ForEach(Array(a.candidates.enumerated()), id: \.offset) { i, c in
+                        HStack(alignment: .top, spacing: 6) {
+                            Text("#\(i + 1)").font(.caption2).foregroundStyle(.secondary)
+                            Text(c).font(.footnote)
+                        }
+                    }
+                    Text("候选已同时发到通知里；点通知上的按钮即可复制，回微信长按粘贴。")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+            } else if !bridge.isAnalyzing {
+                Text("还没有分析结果。")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: 诊断（折叠）
+
+    private var diagnosticsSection: some View {
+        Section {
+            DisclosureGroup("诊断（验证期用的内容，平时不用看）", isExpanded: $showDiagnostics) {
+                // 去重/过滤统计
+                LabeledContent("已完成分析", value: "\(bridge.analysisCount) 次")
+                LabeledContent("内容未变而跳过", value: "\(bridge.skippedAsRepeat) 次")
+                LabeledContent("非聊天界面跳过", value: "\(bridge.skippedNotChat) 次")
+                LabeledContent("自己通知污染跳过", value: "\(bridge.skippedAsEcho) 次")
+                LabeledContent("不在跟随会话而跳过", value: "\(bridge.skippedNotTarget) 次")
+                LabeledContent("变化检测门", value: capture.gateStatus)
+                LabeledContent("放行去分析", value: "\(capture.stableFrameCount) 次 / 共 \(capture.totalFrames) 帧")
+                LabeledContent("帧尺寸", value: capture.frameSize)
+
+                Text("「内容未变而跳过」是内容级去重：像素会因噪声微变，但对话没变就不重复分析。"
+                     + "「非聊天界面跳过」是感知没读到任何消息（在桌面或别的 App）时丢弃。")
+                    .font(.caption2).foregroundStyle(.secondary)
+
+                Button("弹一条带 3 个候选的测试通知") { bridge.selfTestOutput() }
+
+                // Gate 1 的验收记录（已通过，留档）
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Gate 1 结论（已通过）").font(.caption).bold()
+                    Text("① 授权：首次要确认；之后**同一运行内开始/停止不再重弹**"
+                         + "（重开 App 会再确认一次——iOS 没有保存屏幕授权的接口）")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Text("② 录屏指示条：有（灵动岛位置）")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Text(capture.backgroundFrameSummary())
+                        .font(.caption2)
+                        .foregroundStyle(capture.backgroundFrameSummary().hasPrefix("✅") ? .green : .secondary)
+                }
+                .padding(.vertical, 2)
+
+                Button("把最近一帧存到相册") { capture.saveLastFrameToPhotos() }
+                    .disabled(capture.lastFrame == nil)
+                Text("这是**唯一**会把截图写到本机的操作，而且写进系统相册、由你自己决定删。"
+                     + "App 自身不留任何截图：分析走过的画面只在内存里保留最近一帧，"
+                     + "用完即弃；落盘的只有文字（聊天记录 + 分析记录）。")
+                    .font(.caption2).foregroundStyle(.secondary)
+                Button("清空采集记录（重测用）", role: .destructive) { capture.resetLog() }
+            }
+        }
+    }
+}

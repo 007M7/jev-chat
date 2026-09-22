@@ -1,0 +1,318 @@
+{
+  "_comment": "唯一来源。Kotlin(JevQuestions.kt/JevClient.kt) / Python(questions.py) / iOS(Swift) 都必须与它一致，用 check_questions.py 校验。改题目只改本文件再回灌各端。",
+  "version": 2,
+  "message_from": {
+    "note": "state.chat.messages[].from 的取值。两端词表不同（已知不一致），跨端交换必须映射",
+    "python_values": [
+      "her",
+      "me"
+    ],
+    "app_values": [
+      "me",
+      "other"
+    ],
+    "map_app_to_python": {
+      "me": "me",
+      "other": "her"
+    }
+  },
+  "max_messages_in_state": 10,
+  "signature_messages": 6,
+  "profiles": {
+    "one_on_one": {
+      "label": "一对一关系（已校准）",
+      "calibrated": true,
+      "selected_when": "感知层判定 is_group=false",
+      "relationship_default": "对方是这个会话里的另一个人；from=me 的是我发的，from=other 的是对方发的。请按对方的实际身份与场合判断，不要假设亲密关系；拿不准时宁可保守",
+      "judge_questions": {
+        "literal_question": {
+          "type": "noul",
+          "instructions": "Is the other person's latest message meant purely literally, with no subtext? Judge from the whole thread, not one sentence in isolation.",
+          "criteria": {
+            "true": "The latest message is a straightforward statement, question, or plan with no implied accusation, test, sarcasm, hint, or unsaid request.",
+            "false": "There is subtext: a test of whether you remember or care, sarcasm, an implied complaint, a hint they will not say outright, a trap question, an accusation dressed as a question, or a cold/short line that really means blame."
+          }
+        },
+        "true_intent": {
+          "type": "choice",
+          "instructions": "What is the other person's true intent in the latest message, given the full conversation? Prefer tone and context over surface wording. If they are checking whether you remember something or still care, choose confirm_you_care even if the words look like a request to 'say it' or to do something. If they already accepted and closed the matter peacefully, choose close_topic. Ending the relationship, deleting you, or 'don't talk to me' is vent_anger, never close_topic.",
+          "criteria": {
+            "confirm_you_care": "They are testing whether you remember, pay attention, or still care. Signals: 'did you forget again', 'then say it', 'you better', sarcastic 'busy person', asking you to prove you know a past conversation. If they mainly want a new deliverable or a yes on a time, do not use this.",
+            "vent_anger": "They are angry or hurt and mainly want the feeling acknowledged. They are blaming or raising the temperature; a specific plan is not the main point yet.",
+            "request_action": "They want a concrete action, time, deliverable, or commitment from you now, and this is a real ask, not a loyalty test.",
+            "seek_explanation": "They want a factual explanation of why something happened. They asked why or what is going on, not mainly for an apology or a new plan.",
+            "casual_chat": "Light talk, banter, sharing, teasing with a laugh, or friendly logistics with no emotional test and no conflict. A friend suggesting a meal time can be this if the thread is warm.",
+            "close_topic": "Peaceful wrap-up only: they accepted an apology, confirmed a happy plan, said thanks, or clearly signaled they need nothing more. Not a breakup, not 'don't contact me', not sarcastic 'I'm used to it'."
+          }
+        },
+        "danger_level": {
+          "type": "score",
+          "instructions": "How close is this conversation to a fight or to hurting the relationship? Match the current scene. If they genuinely accepted an apology or confirmed a happy plan, score the cooled-down present, not an earlier complaint. If an ultimatum (break up, report to the boss, stop covering for you) is still in force and has not been withdrawn, stay in that high bin even if the latest line names a specific task.",
+          "criteria": [
+            "Light chat or joking; no complaint, no test, no deadline.",
+            "Mild tease or a small reminder that is easy to laugh off; a clumsy reply would only feel slightly awkward.",
+            "A mild complaint or 'please remember next time' said without heat; they still send warm or practical follow-ups.",
+            "Noticeable unhappiness; they mention being forgotten, ignored, or kept waiting, but still give you a chance to make it right.",
+            "Sarcasm, cold short replies, or 'you better'; they are testing you, and a sloppy or fake-confident reply will escalate.",
+            "Openly upset; they accuse you of not listening or not caring; they expect a real response, not a joke.",
+            "Clearly angry and blaming you; a wrong reply will turn this into a fight.",
+            "Last-chance warning. They will not cover for you, do not want to keep talking unless this changes, or tell you to finish a named checklist yourself because trust is almost gone.",
+            "An ultimatum is already on the table even if they also give a practical next step: break up if you forget again, report you tonight, or stop working together if you miss this.",
+            "Active rupture: they said it is over, told you not to reply, deleted you, or are exploding."
+          ]
+        },
+        "should_reply_now": {
+          "type": "noul",
+          "instructions": "Should your next message contain substantive content? Substantive means: admitting a specific known fault, giving a concrete time/plan/deliverable, explaining facts you actually know, or reciting the recalled content they asked you to say. This is NOT 'should you send any message'. Timing is irrelevant. Answer FALSE if the thing they want you to recite or prove is not present in this snippet (you would be guessing). 'Then say it' / 'you better' while you are stalling is FALSE. Answer FALSE if they already accepted and closed the topic. Answer true only if the needed fact, plan, or named fault is already in this snippet.",
+          "criteria": {
+            "true": "The needed fact, named fault, or named time/place is already in this snippet, and they are waiting for that substance now.",
+            "false": "Do not put substance in the next message: the recalled content is not in this snippet, they are testing whether you remember, a holding line is enough, saying less is safer, or they already closed the topic."
+          }
+        },
+        "best_action": {
+          "type": "choice",
+          "instructions": "What type of next action is best? Do not decide whether to send a message immediately. Ignore timing. Choose only the action type. If they asked you to recall a specific past message or event and you have not shown that you actually remember it, choose check_history — do not apologize or invent a plan instead.",
+          "criteria": {
+            "check_history": "Look up prior chat or facts before taking a position. Use when they ask you to repeat, recall, or prove you remember something specific.",
+            "apologize": "Lead with a sincere apology for a real mistake or hurt already identified. Not for an unnamed forgotten thing when you should first find out what it was.",
+            "give_commitment": "Give a concrete promise, deadline, or arrangement they asked for in a conflict or work-pressure setting.",
+            "explain": "Explain what happened or why, without leading with apology or a new plan.",
+            "acknowledge": "Show you heard them and care, without new facts, an apology, or a plan. Use for light chat or when they mainly need to feel seen.",
+            "say_less": "Keep it short or add nothing. Extra words would over-explain, reopen a closed topic, or pour fuel on an ultimatum that told you not to talk.",
+            "make_plan": "Propose or confirm logistics (time, place, task) for a non-conflict request such as a meal or a meeting."
+          }
+        },
+        "she_needs": {
+          "type": "choice",
+          "instructions": "What does the other person need from you right now? Judge the LATEST message first. If they genuinely accepted (thanks / got it / 没事了 / 那就这样 / 收到了 / 过去了), you MUST choose nothing, even if earlier they wanted action or an apology. Sarcastic 'I'm used to it', 'whatever', 'I don't want to hear it', 'don't bother coming' is NOT genuine satisfaction — do not choose nothing. If they asked you to recap a named time/place/date, choose action. If they are testing whether you remember or still care, and the content is unnamed, choose care.",
+          "criteria": {
+            "apology": "They need a sincere apology for hurt or a mistake, and they have not accepted one yet.",
+            "action": "They need a concrete action, time, commitment, recap of a named fact, or follow-through, and they have not yet accepted one.",
+            "explanation": "They need a clear explanation of what happened or why, and have not received it.",
+            "care": "They need proof you remember, listen, or care — a loyalty or attention test — not yet a plan or an apology. Sarcastic 'I am used to it' belongs here, not nothing.",
+            "nothing": "They need nothing further. Genuine acceptance, a peaceful closed topic, warm casual chat with no ask, or a rupture where they told you not to reply. Not sarcasm pretending to be fine."
+          }
+        },
+        "tension_resolved": {
+          "type": "noul",
+          "instructions": "Has interpersonal tension already been resolved? Answer true only if there was never tension, or the other person has clearly accepted, cooled down, joked again, or said it is fine. A sarcastic 'you better', an unanswered test, leftover blame, or an open ultimatum means false.",
+          "criteria": {
+            "true": "No remaining tension: they accepted, joked again, said it's fine, confirmed a happy plan, or the chat was never tense.",
+            "false": "Tension is still present: they are waiting, testing, angry, sarcastic, issuing an ultimatum, or the issue is open."
+          }
+        }
+      },
+      "rank_question": {
+        "key": "best_reply",
+        "type": "choice",
+        "instructions": "Which candidate reply is the most appropriate next message, given the conversation and the other person's true need? Prefer a reply that matches the best action type. Penalize dismissive, over-promising, or off-topic replies. If the facts are not yet confirmed, prefer the candidate that looks them up instead of faking memory or a vague apology.",
+        "option_keys": [
+          "reply_a",
+          "reply_b",
+          "reply_c"
+        ],
+        "criteria_vocabulary": "option key -> 候选回复的中文原文（唯一允许 criteria 用中文的地方）"
+      }
+    },
+    "group": {
+      "label": "群聊（尚未校准）",
+      "calibrated": false,
+      "selected_when": "感知层判定 is_group=true，且档案里没有更具体的身份信息",
+      "relationship_default": "这是多人群聊，from=me 是我发的，from=other 是群成员发的（可能有多个人）。不要假设我和发言者之间有亲密关系，也不要按「对方在测试我在不在乎」解读。",
+      "judge_questions": {
+        "asked_to_me": {
+          "type": "noul",
+          "instructions": "Is the latest message addressed to me, or does it need a reply from me? The conversation is a group: each message carries a sender, and the senders are different people. Check the sender of the latest message before answering. Answer FALSE if the speaker is talking to another member, replying to someone else's question, thinking out loud, sharing something for the group in general, or greeting the room without expecting me specifically. In a group chat most messages are not aimed at any one person.",
+          "criteria": {
+            "true": "The message names me, replies to something I said, asks a question only I would answer, or clearly expects my response as the project owner or the person being discussed.",
+            "false": "The message is aimed at another named member, is a general remark to the room, is a greeting or a share, or is part of a back-and-forth between other people."
+          }
+        },
+        "asker_intent": {
+          "type": "choice",
+          "instructions": "What does the speaker actually want in the latest message? Judge from the whole thread, including what other members said before. A question about how something works is ask_info. Asking for people, resources, links, access, help, or collaboration is ask_resource. Sharing a result or news without asking anything is share_news. Do not read hidden relationship tests into a group chat.",
+          "criteria": {
+            "ask_info": "They want a fact, an answer, or an explanation of how something works. For example asking whether a signup bonus applies to every account, or what a limit is.",
+            "ask_resource": "They want something concrete from me or from the group: people, links, invite codes, access, help, a deliverable, or a collaboration.",
+            "share_news": "They are sharing a result, an announcement, or something they made, with no explicit request. A reply is optional rather than required.",
+            "express_feeling": "They are mainly expressing a feeling: excitement, amusement, a joke, a complaint, or frustration. They are not asking for a fact or a deliverable.",
+            "give_feedback": "They are commenting on something I or the group made: a suggestion, an improvement, or a problem report. The point is the product or the result, not a personal matter.",
+            "close_topic": "They are wrapping up: a closing summary, a goodbye, 'that is all', or explicitly saying nothing more is needed."
+          }
+        },
+        "group_tension": {
+          "type": "score",
+          "instructions": "How much conflict or reputational risk is in this group conversation right now? Match the current scene. Light banter, reactions, and emoji are low. Public criticism of my project in front of a large group and a heated exchange between members are high, even when nothing is aimed at me.",
+          "criteria": [
+            "Friendly banter, reactions, emoji, or neutral logistics. No friction at all.",
+            "Mild teasing or a slightly awkward remark that is safe to ignore.",
+            "A small complaint or a request implying mild dissatisfaction, said without heat.",
+            "Noticeable dissatisfaction about something I made or arranged, still polite.",
+            "Blunt but not hostile criticism, or a question implying I overpromised.",
+            "Openly critical in front of the group; a careless reply could look defensive and cost trust.",
+            "Complaint or blame directed at me publicly while other members watch how I handle it.",
+            "Serious public criticism, or a demand for a correction or a refund.",
+            "Hostile pile-on, or an escalation between members that I am expected to mediate.",
+            "Active rupture in the group: insults, threats, mass exit, or a demand for accountability."
+          ]
+        },
+        "need_reply": {
+          "type": "noul",
+          "instructions": "Does the latest message need a reply from me specifically, reasonably soon? Each message carries a sender, and the senders are different people; do not assume the latest speaker is the same person as the earlier one. Answer FALSE if it is aimed at another member, is a reply between two other people, is a share needing no response, is a closing remark, or if another member has already answered or fulfilled it. A direct question to me, a request for something only I have, or public criticism of my project is TRUE.",
+          "criteria": {
+            "true": "Someone is waiting on me: a direct question, a request only I can fulfil, public criticism of my work that calls for a response, or a closing summary that asks me to confirm.",
+            "false": "No reply is needed from me: the message is aimed at another named member, is a reply between other people, is a share or a reaction, is something another member already handled, or the topic is already closed."
+          }
+        },
+        "best_group_action": {
+          "type": "choice",
+          "instructions": "What type of next action is best for me in this group? Choose only the action type; do not decide the exact wording. Check who has already replied: if another member already answered the question or provided the thing that was asked for, then no_reply or acknowledge_brief is right, not answering again. When people asked me for concrete resources such as links, codes, or collaborators, prefer share_link or promise_and_follow over a vague acknowledgement. When nothing was asked of me or the topic is closed, no_reply is a legitimate answer.",
+          "criteria": {
+            "answer_directly": "Give the fact or the answer in the group. Use when the question is clear and I actually know the answer.",
+            "share_link": "Provide the concrete resource that was requested: a link, an invite code, a QR code, a document, or access.",
+            "promise_and_follow": "Commit to an action and a time, then follow through. Use when the request is real but I cannot deliver it inside this message.",
+            "acknowledge_brief": "A short warm reply: agreeing, thanking, or reacting. Use for banter, shares, and light remarks.",
+            "ask_clarify": "Ask what exactly they mean or need before acting. Use when the request is ambiguous and guessing would waste effort.",
+            "take_private": "Move it out of the group: suggest a private chat or a 1:1 follow-up. Use for money, complaints, personal matters, or anything that would embarrass someone publicly.",
+            "no_reply": "Do not reply. Use when the message was not aimed at me, is a closing remark, or when adding words would only add noise."
+          }
+        },
+        "need_from_me": {
+          "type": "choice",
+          "instructions": "What does the speaker want from me right now, if anything? Judge the LATEST message first. If they already got what they wanted, or were only sharing, choose nothing. Friendly sarcasm or a joke is not a complaint. A request that another member already fulfilled needs nothing from me.",
+          "criteria": {
+            "info": "They want a fact or an explanation from me and do not have it yet.",
+            "resource": "They want something concrete from me: people, links, codes, access, help, or collaboration, and have not received it yet.",
+            "recognition": "They want me to acknowledge what they did or said: a contribution, a result they shared, or a concern they raised. They are not asking for a deliverable.",
+            "nothing": "They need nothing from me: genuine sharing, friendly banter, a closed topic, or a request already fulfilled by me or by someone else."
+          }
+        },
+        "topic_closed": {
+          "type": "noul",
+          "instructions": "Can this topic be considered closed, so that I do not need to keep responding? Answer TRUE only if the thread reached a natural end: a summary was given, thanks were said, the chat went quiet, or the last message plainly expects no answer. An open question, a pending request, or an unaddressed complaint means FALSE.",
+          "criteria": {
+            "true": "The thread is at rest: a closing summary, a thank-you, a farewell, or a last message that plainly expects no answer.",
+            "false": "Still open: a question waiting for an answer, a request not yet fulfilled, a complaint not yet addressed, or a discussion still in motion."
+          }
+        }
+      },
+      "rank_question": {
+        "key": "best_reply",
+        "type": "choice",
+        "instructions": "Which candidate reply is the most appropriate next message in this group chat? Prefer the one that gives the requested fact or resource concretely, or that commits to a specific follow-up. Penalize vague acknowledgements when something concrete was asked for, public over-promising, and replies that add noise when nothing was asked of me.",
+        "option_keys": [
+          "reply_a",
+          "reply_b",
+          "reply_c"
+        ],
+        "criteria_vocabulary": "option key -> 候选回复的中文原文（唯一允许 criteria 用中文的地方）"
+      }
+    }
+  },
+  "judge_questions": {
+    "literal_question": {
+      "type": "noul",
+      "instructions": "Is the other person's latest message meant purely literally, with no subtext? Judge from the whole thread, not one sentence in isolation.",
+      "criteria": {
+        "true": "The latest message is a straightforward statement, question, or plan with no implied accusation, test, sarcasm, hint, or unsaid request.",
+        "false": "There is subtext: a test of whether you remember or care, sarcasm, an implied complaint, a hint they will not say outright, a trap question, an accusation dressed as a question, or a cold/short line that really means blame."
+      }
+    },
+    "true_intent": {
+      "type": "choice",
+      "instructions": "What is the other person's true intent in the latest message, given the full conversation? Prefer tone and context over surface wording. If they are checking whether you remember something or still care, choose confirm_you_care even if the words look like a request to 'say it' or to do something. If they already accepted and closed the matter peacefully, choose close_topic. Ending the relationship, deleting you, or 'don't talk to me' is vent_anger, never close_topic.",
+      "criteria": {
+        "confirm_you_care": "They are testing whether you remember, pay attention, or still care. Signals: 'did you forget again', 'then say it', 'you better', sarcastic 'busy person', asking you to prove you know a past conversation. If they mainly want a new deliverable or a yes on a time, do not use this.",
+        "vent_anger": "They are angry or hurt and mainly want the feeling acknowledged. They are blaming or raising the temperature; a specific plan is not the main point yet.",
+        "request_action": "They want a concrete action, time, deliverable, or commitment from you now, and this is a real ask, not a loyalty test.",
+        "seek_explanation": "They want a factual explanation of why something happened. They asked why or what is going on, not mainly for an apology or a new plan.",
+        "casual_chat": "Light talk, banter, sharing, teasing with a laugh, or friendly logistics with no emotional test and no conflict. A friend suggesting a meal time can be this if the thread is warm.",
+        "close_topic": "Peaceful wrap-up only: they accepted an apology, confirmed a happy plan, said thanks, or clearly signaled they need nothing more. Not a breakup, not 'don't contact me', not sarcastic 'I'm used to it'."
+      }
+    },
+    "danger_level": {
+      "type": "score",
+      "instructions": "How close is this conversation to a fight or to hurting the relationship? Match the current scene. If they genuinely accepted an apology or confirmed a happy plan, score the cooled-down present, not an earlier complaint. If an ultimatum (break up, report to the boss, stop covering for you) is still in force and has not been withdrawn, stay in that high bin even if the latest line names a specific task.",
+      "criteria": [
+        "Light chat or joking; no complaint, no test, no deadline.",
+        "Mild tease or a small reminder that is easy to laugh off; a clumsy reply would only feel slightly awkward.",
+        "A mild complaint or 'please remember next time' said without heat; they still send warm or practical follow-ups.",
+        "Noticeable unhappiness; they mention being forgotten, ignored, or kept waiting, but still give you a chance to make it right.",
+        "Sarcasm, cold short replies, or 'you better'; they are testing you, and a sloppy or fake-confident reply will escalate.",
+        "Openly upset; they accuse you of not listening or not caring; they expect a real response, not a joke.",
+        "Clearly angry and blaming you; a wrong reply will turn this into a fight.",
+        "Last-chance warning. They will not cover for you, do not want to keep talking unless this changes, or tell you to finish a named checklist yourself because trust is almost gone.",
+        "An ultimatum is already on the table even if they also give a practical next step: break up if you forget again, report you tonight, or stop working together if you miss this.",
+        "Active rupture: they said it is over, told you not to reply, deleted you, or are exploding."
+      ]
+    },
+    "should_reply_now": {
+      "type": "noul",
+      "instructions": "Should your next message contain substantive content? Substantive means: admitting a specific known fault, giving a concrete time/plan/deliverable, explaining facts you actually know, or reciting the recalled content they asked you to say. This is NOT 'should you send any message'. Timing is irrelevant. Answer FALSE if the thing they want you to recite or prove is not present in this snippet (you would be guessing). 'Then say it' / 'you better' while you are stalling is FALSE. Answer FALSE if they already accepted and closed the topic. Answer true only if the needed fact, plan, or named fault is already in this snippet.",
+      "criteria": {
+        "true": "The needed fact, named fault, or named time/place is already in this snippet, and they are waiting for that substance now.",
+        "false": "Do not put substance in the next message: the recalled content is not in this snippet, they are testing whether you remember, a holding line is enough, saying less is safer, or they already closed the topic."
+      }
+    },
+    "best_action": {
+      "type": "choice",
+      "instructions": "What type of next action is best? Do not decide whether to send a message immediately. Ignore timing. Choose only the action type. If they asked you to recall a specific past message or event and you have not shown that you actually remember it, choose check_history — do not apologize or invent a plan instead.",
+      "criteria": {
+        "check_history": "Look up prior chat or facts before taking a position. Use when they ask you to repeat, recall, or prove you remember something specific.",
+        "apologize": "Lead with a sincere apology for a real mistake or hurt already identified. Not for an unnamed forgotten thing when you should first find out what it was.",
+        "give_commitment": "Give a concrete promise, deadline, or arrangement they asked for in a conflict or work-pressure setting.",
+        "explain": "Explain what happened or why, without leading with apology or a new plan.",
+        "acknowledge": "Show you heard them and care, without new facts, an apology, or a plan. Use for light chat or when they mainly need to feel seen.",
+        "say_less": "Keep it short or add nothing. Extra words would over-explain, reopen a closed topic, or pour fuel on an ultimatum that told you not to talk.",
+        "make_plan": "Propose or confirm logistics (time, place, task) for a non-conflict request such as a meal or a meeting."
+      }
+    },
+    "she_needs": {
+      "type": "choice",
+      "instructions": "What does the other person need from you right now? Judge the LATEST message first. If they genuinely accepted (thanks / got it / 没事了 / 那就这样 / 收到了 / 过去了), you MUST choose nothing, even if earlier they wanted action or an apology. Sarcastic 'I'm used to it', 'whatever', 'I don't want to hear it', 'don't bother coming' is NOT genuine satisfaction — do not choose nothing. If they asked you to recap a named time/place/date, choose action. If they are testing whether you remember or still care, and the content is unnamed, choose care.",
+      "criteria": {
+        "apology": "They need a sincere apology for hurt or a mistake, and they have not accepted one yet.",
+        "action": "They need a concrete action, time, commitment, recap of a named fact, or follow-through, and they have not yet accepted one.",
+        "explanation": "They need a clear explanation of what happened or why, and have not received it.",
+        "care": "They need proof you remember, listen, or care — a loyalty or attention test — not yet a plan or an apology. Sarcastic 'I am used to it' belongs here, not nothing.",
+        "nothing": "They need nothing further. Genuine acceptance, a peaceful closed topic, warm casual chat with no ask, or a rupture where they told you not to reply. Not sarcasm pretending to be fine."
+      }
+    },
+    "tension_resolved": {
+      "type": "noul",
+      "instructions": "Has interpersonal tension already been resolved? Answer true only if there was never tension, or the other person has clearly accepted, cooled down, joked again, or said it is fine. A sarcastic 'you better', an unanswered test, leftover blame, or an open ultimatum means false.",
+      "criteria": {
+        "true": "No remaining tension: they accepted, joked again, said it's fine, confirmed a happy plan, or the chat was never tense.",
+        "false": "Tension is still present: they are waiting, testing, angry, sarcastic, issuing an ultimatum, or the issue is open."
+      }
+    }
+  },
+  "rank_question": {
+    "key": "best_reply",
+    "type": "choice",
+    "instructions": "Which candidate reply is the most appropriate next message, given the conversation and the other person's true need? Prefer a reply that matches the best action type. Penalize dismissive, over-promising, or off-topic replies. If the facts are not yet confirmed, prefer the candidate that looks them up instead of faking memory or a vague apology.",
+    "option_keys": [
+      "reply_a",
+      "reply_b",
+      "reply_c"
+    ],
+    "criteria_vocabulary": "option key -> 候选回复的中文原文（唯一允许 criteria 用中文的地方）"
+  },
+  "draft": {
+    "system_prompt": "你是中文即时通讯回复助手。只输出一个 JSON 数组，含且仅含 3 条候选回复文本，三条策略要有区别（例如：一条稳妥承接、一条给具体行动或承诺、一条简短低姿态）。每条不超过 40 字，口语、自然、像真人在聊天软件里发消息。不要解释，不要加引号以外的内容，直接输出 JSON 数组。",
+    "user_prompt_template": "关系：{relationship}\n\n最近对话：\n{convo}\n\n请给出 3 条候选回复。",
+    "convo_line_template": "{speaker}：{text}",
+    "self_label": "我",
+    "other_label": "对方",
+    "temperature": 0.8,
+    "default_model": "deepseek/deepseek-chat-v3.1",
+    "max_reply_chars": 40,
+    "convo_messages": 10,
+    "note": "prompt 取自 app/.../jev/JevClient.kt 的 generateCandidates，逐字一致"
+  },
+  "perception": {
+    "note": "iOS 感知层：优先多模态视觉模型，本地 Vision OCR 退为离线兜底",
+    "vlm_default_model": "qwen/qwen3-vl-32b-instruct",
+    "vlm_cheap_model": "qwen/qwen3-vl-8b-instruct"
+  }
+}

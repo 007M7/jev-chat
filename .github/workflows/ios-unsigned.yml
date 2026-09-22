@@ -1,0 +1,152 @@
+name: iOS 未签名 IPA
+
+# 为什么走云构建：iOS 原生 App 只能在 macOS 上用 Xcode 编译。
+# 目标机器是 Windows，所以用 GitHub 的 macOS runner 出未签名 IPA，
+# 再在 Windows 上用 Sideloadly/AltStore 用个人 Apple ID 重签安装（免费账号 7 天有效）。
+#
+# 手动触发即可，不需要每次 push 都跑。
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: 本次构建的说明（会写进 artifact 名）
+        required: false
+        default: probe
+
+jobs:
+  build:
+    # 必须是带 Xcode 27 的镜像 —— ScreenCaptureKit 的 iOS 版从 iOS 27 SDK 才有。
+    # 实测 macos-15 上只有 Xcode 26.3 / iOS 26.2 SDK，会直接编译失败。
+    # actions/runner-images 的可用标签里，`xcode-27` 是带 Xcode 27 的镜像（arm64，preview）。
+    #
+    # **实测坑：这个 preview 镜像经常抢不到机器**（官方公告原文：
+    # "The image is marked as preview for now... there could be queueing issues as the
+    #  capacity will be balanced only throughout the next weeks."）。
+    # 症状很隐蔽：run 在 ~11 秒内就 completed/failure，**runner_name 为空、steps 为空**
+    # （作业根本没被分配），看起来像构建失败但其实是没排上队。
+    # 判定方法：gh api repos/OWNER/REPO/actions/runs/<id>/jobs --jq '.jobs[0] | {runner_name, steps: (.steps|length)}'
+    # 处理：等几分钟重试即可；标签本身是有效的。
+    runs-on: xcode-27
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 看看这台 runner 上有哪些 Xcode（ScreenCaptureKit 需要 iOS 27 SDK）
+        run: |
+          echo "=== /Applications 下的 Xcode ==="
+          ls -1 /Applications | grep -i xcode || echo "(没找到 Xcode)"
+          echo "=== 当前选中的版本 ==="
+          xcodebuild -version || true
+          echo "=== 可用的 SDK ==="
+          xcodebuild -showsdks | grep -i iphoneos || true
+          echo "=== 已装的模拟器运行时 ==="
+          xcrun simctl list runtimes 2>/dev/null | head -20 || true
+
+      - name: 选择 Xcode（优先 27 以上）
+        run: |
+          set -e
+          # **优先非 beta**：镜像上同时有 27.0 Release Candidate 和 27.2 beta 时，
+          # 光按版本号取最新会选到 beta——beta 有回归风险，也与前几个已验收的包不一致
+          # （probe17/18/19 都是 27.0 RC 编的）。只有没有非 beta 的 27+ 时才退而用 beta。
+          VER=$(ls -1 /Applications | grep -E '^Xcode.*\.app$' | grep -vi 'beta' | sort -V | tail -1)
+          if [ -z "$VER" ]; then
+            VER=$(ls -1 /Applications | grep -E '^Xcode.*\.app$' | sort -V | tail -1)
+            echo "::warning::只有 beta 版 Xcode 可用，用 $VER"
+          fi
+          if [ -z "$VER" ]; then echo "::error::runner 上没有 Xcode"; exit 1; fi
+          echo "选中 $VER"
+          sudo xcode-select -s "/Applications/$VER/Contents/Developer"
+          xcodebuild -version
+          # 硬前提：iOS 27 SDK。没有就直接失败，不要产出一个装不上/跑不了的包。
+          if ! xcodebuild -showsdks | grep -qE 'iphoneos2[7-9]'; then
+            echo "::error::没有 iOS 27+ SDK，ScreenCaptureKit 的 iOS 版无法编译。需要在 runner 上装 Xcode 27 或换 runner。"
+            xcodebuild -showsdks | grep -i iphoneos || true
+            exit 1
+          fi
+
+      - name: 安装 XcodeGen
+        run: brew install xcodegen
+
+      - name: 把 tools/jev 的共享配置拷进 App 包
+        # 题目、感知 prompt、provider 配置三份 JSON 是 Python/桌面版/iOS 的**共享单一来源**。
+        # 不把它们复制进仓库（避免多一份副本漂移），而是在构建时拷进 ios/Resources/ 让 App 读。
+        run: |
+          mkdir -p ios/Resources
+          cp tools/jev/questions.json ios/Resources/
+          cp tools/jev/prompts.json   ios/Resources/
+          cp tools/jev/providers.json ios/Resources/
+          echo "=== 打进包里的配置 ==="
+          ls -la ios/Resources/
+          python3 - <<'PY'
+          import json
+          for n in ("questions", "prompts", "providers"):
+              with open(f"ios/Resources/{n}.json", encoding="utf-8") as f:
+                  d = json.load(f)
+              print(f"  {n}.json 合法，顶层键: {list(d)[:6]}")
+          PY
+
+      - name: 生成工程
+        working-directory: ios
+        run: |
+          xcodegen generate
+          echo "=== 生成结果 ==="
+          ls -la
+          ls -la Support/ 2>/dev/null || true
+
+      - name: 编译（未签名）
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project JevAssistant.xcodeproj \
+            -scheme JevAssistant \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build | tee build.log
+          echo "=== 产物 ==="
+          ls -la build/Build/Products/Release-iphoneos/ || true
+
+      - name: 验证 screen-capture 后台模式真的进了产物
+        working-directory: ios
+        run: |
+          APP=build/Build/Products/Release-iphoneos/JevAssistant.app
+          if [ ! -d "$APP" ]; then echo "::error::没找到 .app 产物"; exit 1; fi
+          echo "=== 主 App 的 Info.plist 关键项 ==="
+          /usr/libexec/PlistBuddy -c "Print :UIBackgroundModes" "$APP/Info.plist" || {
+            echo "::error::Info.plist 里没有 UIBackgroundModes —— 后台采集不会生效，装到手机上测也是白测"
+            exit 1
+          }
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP/Info.plist"
+          echo "=== 内嵌的 widget 扩展（实时活动）==="
+          ls -la "$APP/PlugIns" 2>/dev/null || echo "(没有 PlugIns，实时活动可能未嵌入)"
+
+      - name: 打包成未签名 IPA
+        working-directory: ios
+        run: |
+          APP=build/Build/Products/Release-iphoneos/JevAssistant.app
+          rm -rf Payload JevAssistant-unsigned.ipa
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -qry JevAssistant-unsigned.ipa Payload
+          ls -lh JevAssistant-unsigned.ipa
+          echo "=== IPA 内容 ==="
+          unzip -l JevAssistant-unsigned.ipa | head -20
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JevAssistant-unsigned-${{ github.event.inputs.note || 'probe' }}
+          path: ios/JevAssistant-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 编译日志（失败时）
+        if: failure()
+        working-directory: ios
+        run: |
+          echo "=== 最近的错误 ==="
+          grep -nE "error:|warning:" build.log | tail -60 || tail -80 build.log

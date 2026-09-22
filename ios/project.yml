@@ -1,0 +1,97 @@
+name: JevAssistant
+
+# 用 XcodeGen 生成工程，不把 .xcodeproj 提交进仓库。
+# 原因：.xcodeproj 冲突极难解决，且云构建上 `xcodegen generate` 只要几秒。
+# 本地没有 Mac 时不需要装 XcodeGen；GitHub Actions 的 macOS runner 会装。
+
+options:
+  bundleIdPrefix: com.jev
+  # 最低系统定 26.0，而不是 27.0。原因：用户的手机实测是 iOS 26.6.2，
+  # 定 27.0 会导致**装都装不上**。采集能力本身确实需要 iOS 27
+  # （ScreenCaptureKit 的 iOS 版从 27.0 才有），但那部分代码已经被
+  # `@available(iOS 27.0, *)` 关在 ScreenCaptureEngine 里，运行时才决定是否启用。
+  # 这样同一个包：iOS 26 能装能跑（无采集，但通知/灵动岛可验），iOS 27 自动获得采集。
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGNING_ALLOWED: "NO"      # 产出未签名 IPA，由 Sideloadly/AltStore 在 Windows 上重签
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGN_IDENTITY: ""
+    ENABLE_BITCODE: "NO"
+
+targets:
+  JevAssistant:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Shared                 # 与 widget 扩展共用 JevActivityAttributes
+      # Resources/ 由构建时从 tools/jev/ 拷进来（questions.json / prompts.json / providers.json），
+      # **不入库**。这样三端读同一份配置，不在 Swift 里再抄一遍。
+      - path: Resources
+    info:
+      # XcodeGen 按下面的 properties 生成这个文件（单一来源，别手写一份）
+      path: Support/Info.plist
+      properties:
+        CFBundleDisplayName: Jev 助手
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        # 关键：让采集流在切到微信后继续跑。Apple 文档 "Capturing screen content on iOS"
+        # 原文："screen-capture in UIBackgroundModes, so the stream survives backgrounding
+        # for full-display capture"。这是"全自动读屏"的命门，Gate 1 就是要验它。
+        # 注意：免费签名（个人 team）能否带这个后台模式，尚未验证。
+        UIBackgroundModes:
+          - screen-capture
+        # 存最近一帧到相册，用来人工核对"到底截到了什么"
+        NSPhotoLibraryAddUsageDescription: 保存采集到的截图，用于核对识别结果
+        # **打开文件共享**：让 App 沙盒里的记录 JSON 在「文件」App 里可见、可拷出来。
+        # 这是"用真实数据校准群聊题目集 / 在 PC 上蒸馏记忆"的前提——
+        # 记录出不来，闭环就断在手机上。两个键都要：
+        #   UIFileSharingEnabled 让 Documents 出现在「文件」App 里
+        #   LSSupportsOpeningDocumentsInPlace 让别的 App 能就地打开它
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jev.assistant
+        TARGETED_DEVICE_FAMILY: "1"      # 只做 iPhone
+        GENERATE_INFOPLIST_FILE: "NO"
+        # ScreenCaptureKit 在 iOS 26 上根本不存在，所以必须弱链接：
+        # 否则在 iOS 26 设备上启动时 dyld 会因为找不到框架直接崩溃。
+        # 代码侧由 `@available(iOS 27.0, *)` 保证不去碰它。
+        OTHER_LDFLAGS: "-weak_framework ScreenCaptureKit"
+    # 暂时不嵌 widget 扩展：免费账号下"自动 bundle ID"会把主 App 改名，
+    # 而扩展的 bundle ID 必须以上层 App 的 ID 为前缀，两者对不上就会被 iOS 判为结构不合法
+    # （表现为「不受信任的开发者」且信任条目生不出来）。
+    # 另外 Sideloadly 的"去掉扩展"那段代码在勾了其它 patch 选项时会崩（实测 Guru Meditation）。
+    # 所以改成构建侧直接不出扩展，等 Bundle ID 方案理清后再加回来。
+    # dependencies:
+    #   - target: JevWidget
+    #     embed: true
+    #     codeSign: false
+
+#   # 实时活动（灵动岛/锁屏）必须由 widget 扩展渲染，App 只能更新数据。
+#   # 这是本 target 存在的唯一原因。
+#   JevWidget:
+#     type: app-extension
+#     platform: iOS
+#     sources:
+#       - path: Widget
+#       - path: Shared
+#     info:
+#       path: Support/WidgetInfo.plist
+#       properties:
+#         CFBundleDisplayName: Jev 实时活动
+#         CFBundleShortVersionString: "0.1"
+#         CFBundleVersion: "1"
+#         NSExtension:
+#           NSExtensionPointIdentifier: com.apple.widgetkit-extension
+#     settings:
+#       base:
+#         PRODUCT_BUNDLE_IDENTIFIER: com.jev.assistant.widget
+#         GENERATE_INFOPLIST_FILE: "NO"
