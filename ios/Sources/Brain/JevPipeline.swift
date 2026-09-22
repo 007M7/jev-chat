@@ -35,9 +35,26 @@ struct JevAnalysis {
     /// 导出到 PC 后用于：校准群聊题目集、蒸馏人物/会话记忆。
     /// 只存文本，不含截图。
     var transcript: [String]
+    /// 同上，但保留结构。`transcript` 是它的文本形式，用于展示与导出；
+    /// App 内部累积"群聊记录"用这一份，免得再从 `"发言人：内容"` 字符串反解——
+    /// 那个往返在群聊里会把发言人认错（正是"没分清不同用户"的根源之一）。
+    var lines: [ChatMsg]
     /// 七道题的**原始答案**（题名 → 简洁值，如 asked_to_me="0.11" / asker_intent="ask_resource"）。
     /// 只带中文标签的话没法按题目集做校准——校准需要逐题的机器值。
     var answersSummary: [String: String]
+}
+
+/// 一条在内存里流转的对话消息（感知层读出来的原始形态，还没有时间戳）。
+///
+/// 刻意用**具名结构体**而不是元组：之前这里同时存在
+/// `(side, sender, text)` 和 `(side, text, sender)` 两种标签顺序，
+/// 而 Swift 的 tuple shuffle 转换规则很微妙。本机没有 Swift 编译器，
+/// 这类错只能等十分钟起步的云构建才发现，不如从类型上根除。
+/// （落盘形态是 `AnalysisStore.ChatLine`，多一个时间戳。）
+struct ChatMsg: Equatable {
+    var side: String          // me | other
+    var sender: String?       // 群聊里的发言人
+    var text: String
 }
 
 enum JevError: LocalizedError {
@@ -62,6 +79,11 @@ enum JevError: LocalizedError {
 ///   感知 prompt 来自包内 prompts.json；题目来自包内 questions.json；
 ///   端点与模型来自包内 providers.json。这样三端不会各写一套后漂移。
 final class JevPipeline {
+
+    /// 送进判断层的最大消息条数。
+    /// 必须与 `tools/jev/questions.json` 的 `max_messages_in_state` 一致——
+    /// 那边是 Python/桌面版共用的单一来源，改一处要改两处。
+    static let maxMessagesInState = 10
 
     private let session: URLSession
 
@@ -236,8 +258,18 @@ final class JevPipeline {
     /// 早期版本是调用方在分析前用"上一次的标题"猜档案——那会犯两个错：
     /// 第一次分析没有档案；切换会话时会把**上一个会话**的身份信息注入进来，
     /// 而注入错误的身份比不注入更糟（会稳定地把判断带偏）。
-    typealias ProfileProvider = (_ title: String, _ isGroup: Bool)
-        -> (relationship: String, memory: [String: Any]?)
+    /// 感知拿到标题后向调用方要的「本次会话的已知前提」。
+    /// 三样都是**感知之后才能取**的：关系描述、人工档案、以及累积的群聊上下文。
+    /// 刻意不用元组——已经扩过一次（加 priorLines），再加字段时结构体更稳。
+    struct SessionContext {
+        var relationship: String = ""
+        var memory: [String: Any]? = nil
+        /// 跨帧累积的历史消息（不含这一帧读到的）。单帧只能看到当前屏，
+        /// 而群聊里判断最新那条往往需要更早的上下文——用户明确指出过这一点。
+        var priorLines: [ChatMsg] = []
+    }
+
+    typealias ContextProvider = (_ title: String, _ isGroup: Bool) -> SessionContext
 
     /// 上一帧已知的会话信息，用于兜住"这一帧读不到标题/判断不出群聊"的情况
     struct SessionHint {
@@ -251,7 +283,7 @@ final class JevPipeline {
     func analyze(image: UIImage,
                  sessionHint: SessionHint? = nil,
                  skipDraft: Bool = false,
-                 profileProvider: ProfileProvider? = nil) async throws -> JevAnalysis {
+                 contextProvider: ContextProvider? = nil) async throws -> JevAnalysis {
         let t0 = Date()
 
         // ---- 1) 感知 ----
@@ -303,7 +335,7 @@ final class JevPipeline {
         let rawMsgs = (structured["messages"] as? [[String: Any]]) ?? []
 
         // 映射成统一形态：side / text / sender。非文本转方括号描述
-        var msgs: [(side: String, text: String, sender: String?)] = []
+        var msgs: [ChatMsg] = []
         for m in rawMsgs {
             let side = ((m["side"] as? String) ?? "other") == "me" ? "me" : "other"
             let kind = (m["kind"] as? String) ?? "text"
@@ -322,9 +354,10 @@ final class JevPipeline {
                 }
             }
             guard !body.isEmpty else { continue }
-            msgs.append((side, body, (sender?.isEmpty ?? true) ? nil : sender))
+            msgs.append(ChatMsg(side: side,
+                                sender: (sender?.isEmpty ?? true) ? nil : sender,
+                                text: body))
         }
-        let recent = Array(msgs.suffix(10))
 
         // **is_group 的兜底必须落到中性档案**：
         // 感知层没给出时（画面信息不足）如果落到 one_on_one，而它的默认关系描述是
@@ -335,8 +368,10 @@ final class JevPipeline {
         // **交叉校验**：对方阵营出现两个以上不同发言人时，它不可能是单聊。
         // 实测踩过——256 人的群被判成 is_group=false，于是用了单聊档案、生成了恋人话术。
         // 这个判据完全来自数据本身，比模型的 is_group 字段更可靠。
+        // 用**这一帧**的消息做判定：只需要帧内发言人，而累积上下文此刻还取不到
+        // （它要等标题与 isGroup 定了才能按会话取）。
         var distinctOtherSenders: [String] = []
-        for m in recent where m.side == "other" {
+        for m in msgs where m.side == "other" {
             if let s = m.sender, !distinctOtherSenders.contains(s) { distinctOtherSenders.append(s) }
         }
         let groupBySenders = distinctOtherSenders.count >= 2
@@ -364,9 +399,17 @@ final class JevPipeline {
         // 人工填的会话档案优先于配置里的默认措辞——这是"关系前提不再靠猜"的落点
         // （题目集原本预设了亲密关系，群聊里根本没这层关系）。
         // 注意：档案在这里才取，因为此刻才拿到标题，能取到**本次会话**的档案。
-        let ctx = profileProvider?(chatTitle, isGroup)
+        let ctx = contextProvider?(chatTitle, isGroup)
         let relationship = (ctx?.relationship.isEmpty == false) ? (ctx?.relationship ?? "") : profileRelationship
         let memory = ctx?.memory
+        let priorLines = ctx?.priorLines ?? []
+
+        // **把跨帧累积的上下文与这一帧读到的合并**，再取最近 10 条交给判断层。
+        // 为什么需要：单张截图只能看到当前屏的几条；如果某帧只读到两三条，
+        // 判断层就缺上下文。合并后能补回更早的消息（用户明确指出群聊下需要上下文）。
+        // 合并策略与 AnalysisStore.mergeConversation 同构：找尾部与开头的最大重合，去重后追加。
+        let merged = Self.mergeContext(prior: priorLines, frame: msgs)
+        let recent = Array(merged.suffix(Self.maxMessagesInState))
 
         // ---- 3) 构造 state（群聊逐条带 sender）----
         var chatMsgs: [[String: Any]] = []
@@ -566,6 +609,7 @@ final class JevPipeline {
                 let who = m.side == "me" ? "我" : (m.sender ?? "对方")
                 return "\(who)：\(m.text)"
             },
+            lines: recent,
             answersSummary: questions.keys.reduce(into: [String: String]()) { acc, k in
                 guard let a = answers[k] as? [String: Any] else { return }
                 if let v = a["noul"] as? Double { acc[k] = String(format: "%.2f", v) }
@@ -573,6 +617,30 @@ final class JevPipeline {
                 else if let s = a["score"] as? Double { acc[k] = String(format: "%.2f", s) }
             }
         )
+    }
+
+    /// 把"累积的上下文"与"这一帧读到的"合并：找尾部与开头的最大重合，去掉重合再追加。
+    /// 逐帧前进时不会重复；用户往回翻则被去重。
+    static func mergeContext(prior: [ChatMsg], frame: [ChatMsg]) -> [ChatMsg] {
+        guard !prior.isEmpty else { return frame }
+        let maxK = min(prior.count, frame.count)
+        var overlap = 0
+        if maxK > 0 {
+            // 从最长的可能重合往回试：重叠越多说明这一帧越靠后，越该以它为准
+            for k in stride(from: maxK, through: 1, by: -1) {
+                if Array(prior.suffix(k)) == Array(frame.prefix(k)) { overlap = k; break }
+            }
+        }
+        var out = Array(prior.dropLast(overlap))
+        out.append(contentsOf: frame)
+        // 整体去重（保留首次出现），预防回翻造成的重复
+        var seen = Set<String>()
+        var deduped: [ChatMsg] = []
+        for m in out {
+            let key = "\(m.side)|\(m.sender ?? "")|\(m.text)"
+            if seen.insert(key).inserted { deduped.append(m) }
+        }
+        return deduped
     }
 
     /// 长边压到 maxSide。用于降低感知请求的上传体积。
@@ -592,7 +660,7 @@ final class JevPipeline {
     /// 实测踩过——用户在不同界面翻阅不同图片时，图片描述每次都不同，于是签名每次都变、
     /// 去重失效，同一句「慢 有办法解决没」被反复分析了三次（19:54/55/56）。
     /// 改用稳定的 `[图片]` / `[表情包]` 占位后，这类噪声不会再触发重复分析。
-    static func signature(of msgs: [(side: String, text: String, sender: String?)]) -> String {
+    static func signature(of msgs: [ChatMsg]) -> String {
         func stable(_ text: String) -> String {
             guard text.hasPrefix("["), let close = text.firstIndex(of: "]") else { return text }
             let inner = text[text.index(after: text.startIndex)..<close]

@@ -16,6 +16,8 @@ struct JevApp: App {
                     .tabItem { Label("探针", systemImage: "waveform.path.ecg") }
                 HistoryView()
                     .tabItem { Label("记录", systemImage: "clock.arrow.circlepath") }
+                ContactsView()
+                    .tabItem { Label("联系人", systemImage: "person.crop.circle") }
             }
             .onAppear {
                 bridge.setUp()
@@ -154,16 +156,16 @@ final class AppBridge: ObservableObject {
                 // 会话档案在**感知拿到标题之后**才取（见 pipeline 里的说明）：
                 // 用上一次的标题猜档案会把上一个会话的身份注入进来，那比不注入更糟。
                 let a = try await pipeline.analyze(image: image, sessionHint: lastSession, skipDraft: fastMode) { [weak self] title, isGroup in
-                    guard let self else { return ("", nil) }
+                    guard let self else { return JevPipeline.SessionContext() }
                     let key = self.store.sessionKey(for: title, isGroup: isGroup)
+                    var ctx = JevPipeline.SessionContext()
 
-                    // 人工填的关系与人物身份 → 注入判断层。
-                    // 人物身份是**跨会话**的：同一个人在其他群填过，这里也会带上。
-                    let rel = self.store.profiles[key]?.relationshipText(fallback: "") ?? ""
+                    // ① 人工填的关系与人物身份 → 注入判断层。
+                    //    人物身份是**跨会话**的：同一个人在其他群填过，这里也会带上。
+                    ctx.relationship = self.store.profiles[key]?.relationshipText(fallback: "") ?? ""
                     let facts = self.store.personFacts(inSession: key)
-                    var mem: [String: Any]? = nil
                     if !facts.isEmpty {
-                        mem = [
+                        ctx.memory = [
                             "note": "以下是人工维护的会话与人物档案（人物身份跨会话通用），"
                                   + "属于已知前提，不是当前对话内容",
                             "chat_title": title,
@@ -171,7 +173,9 @@ final class AppBridge: ObservableObject {
                             "facts": ["人工档案": facts],
                         ]
                     }
-                    return (rel, mem)
+                    // ② 跨帧累积的群聊上下文 → 补上这一帧看不到的更早消息
+                    ctx.priorLines = self.store.recentLines(in: key, n: 12)
+                    return ctx
                 }
                 latest = a
                 analysisCount += 1
@@ -235,6 +239,12 @@ final class AppBridge: ObservableObject {
                     answersSummary: a.answersSummary
                 )
                 store.add(rec)
+
+                // 把这一帧读到的对话并进「群聊记录」（跨帧累积，界面上与分析记录分开看）
+                store.mergeConversation(
+                    sessionKey: key, title: a.chatTitle, isGroup: a.isGroup,
+                    lines: a.lines
+                )
 
                 // 记住这次的会话身份，供下一帧兜底（标题被通知横幅盖住时特别有用）
                 if a.chatTitle != "未知会话" {

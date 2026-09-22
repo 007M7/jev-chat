@@ -1,6 +1,39 @@
 import Foundation
 
-/// 一条被记录下来的分析（App 内的"对话记录"）
+/// 一条聊天记录（从截图里读到的对话原文，跨帧累积）。
+///
+/// 为什么要累积：单张截图只能看到当前屏的几条消息，而群聊里判断最新那条
+/// 往往需要更早的上下文。用户明确指出"要有聊天的上下文，这个应该是存过的"。
+/// 于是按会话累积：每帧读到的消息按内容去重合并进来，于是越往后上下文越完整。
+struct ChatLine: Codable, Hashable, Identifiable {
+    /// **存储的唯一 id，不是从内容拼出来的**。
+    /// 同一帧读到的所有消息共用同一个时间戳，所以「同一个人在同一屏里连发两条一样的话」
+    /// 会让拼出来的 id 撞车；而 SwiftUI 的 ForEach 要求 id 唯一，撞了会渲染错乱。
+    var id: String = UUID().uuidString
+    var side: String          // me | other
+    var sender: String?
+    var text: String
+    var at: Date
+
+    /// 内容指纹（不含时间）：合并去重看它，不看 `at`——两帧读到同一句话的时间戳必然不同。
+    var contentKey: String { "\(side)|\(sender ?? "")|\(text)" }
+}
+
+/// 会话列表的一行（记录页的「群聊 / 单聊」两栏就是按 isGroup 分的）。
+///
+/// 用具名结构体而不是元组：元组没法干净地在视图里当集合元素过滤和传递。
+/// 定义在**顶层**（和 ChatLine / Person 一样），视图里直接写 `ChatSession` 即可；
+/// 嵌在 AnalysisStore 里的话就成了 `AnalysisStore.ChatSession`。
+struct ChatSession: Identifiable, Hashable {
+    let key: String
+    let title: String
+    let isGroup: Bool
+    let count: Int
+    let lastAt: Date
+    var id: String { key }
+}
+
+/// 一条被记录下来的分析（App 内的"分析记录"）
 struct StoredAnalysis: Codable, Identifiable {
     var id: String = UUID().uuidString
     var at: Date = Date()
@@ -96,6 +129,8 @@ final class AnalysisStore: ObservableObject {
     @Published private(set) var analyses: [StoredAnalysis] = []
     @Published private(set) var profiles: [String: SessionProfile] = [:]
     @Published private(set) var persons: [String: Person] = [:]
+    /// 每个会话累积的**群聊记录**（对话原文）。与"分析记录"分开，两者在界面上也分开看。
+    @Published private(set) var conversations: [String: [ChatLine]] = [:]
 
     /// **只跟随这个会话**（nil = 不限制）。放在 store 里而不是 AppBridge，
     /// 是为了让记录页也能直接改它（在会话列表里点「跟随」比去主页面下拉选更好用）。
@@ -114,6 +149,7 @@ final class AnalysisStore: ObservableObject {
     private let historyURL = AnalysisStore.docURL("jev_history.json")
     private let profileURL = AnalysisStore.docURL("jev_profiles.json")
     private let personURL = AnalysisStore.docURL("jev_persons.json")
+    private let convoURL = AnalysisStore.docURL("jev_conversations.json")
 
     private static func docURL(_ name: String) -> URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -187,7 +223,7 @@ final class AnalysisStore: ObservableObject {
     }
 
     /// 按会话分组（最近活跃在前）
-    var sessions: [(key: String, title: String, isGroup: Bool, count: Int, lastAt: Date)] {
+    var sessions: [ChatSession] {
         var byKey: [String: (String, Bool, Int, Date)] = [:]
         for a in analyses {
             if var cur = byKey[a.sessionKey] {
@@ -198,8 +234,8 @@ final class AnalysisStore: ObservableObject {
                 byKey[a.sessionKey] = (a.chatTitle, a.isGroup, 1, a.at)
             }
         }
-        return byKey.map { (key: $0.key, title: $0.value.0, isGroup: $0.value.1,
-                            count: $0.value.2, lastAt: $0.value.3) }
+        return byKey.map { ChatSession(key: $0.key, title: $0.value.0, isGroup: $0.value.1,
+                                      count: $0.value.2, lastAt: $0.value.3) }
             .sorted { $0.lastAt > $1.lastAt }
     }
 
@@ -260,7 +296,57 @@ final class AnalysisStore: ObservableObject {
         analyses.removeAll()
         profiles.removeAll()
         persons.removeAll()
+        conversations.removeAll()
         save()
+    }
+
+    // MARK: 群聊记录（跨帧累积）
+
+    /// 把这一帧读到的消息并进会话的累积记录。
+    ///
+    /// 合并策略：先找"已有记录的尾部"与"新读到的开头"的最大重合长度，把重合部分去掉再追加。
+    /// 这样逐帧前进时不会重复；用户往回翻（读到更早的消息）时也不会打乱顺序，
+    /// 只会被去重（同一条内容只留最早出现的那次）。
+    func mergeConversation(sessionKey: String, title: String, isGroup: Bool,
+                           lines: [ChatMsg],
+                           at: Date = Date()) {
+        guard !lines.isEmpty else { return }
+        var existing = conversations[sessionKey] ?? []
+        let incoming = lines.map { ChatLine(side: $0.side, sender: $0.sender, text: $0.text, at: at) }
+
+        // 尾部与开头的最大重合。**按内容指纹比，不按时间**：
+        // 两帧读到同一句话的时间戳必然不同，拿 ChatLine 直接比会永远不相等，这段就成了死代码。
+        let maxK = min(existing.count, incoming.count)
+        var overlap = 0
+        if maxK > 0 {
+            for k in stride(from: maxK, through: 1, by: -1) {
+                if Array(existing.suffix(k).map(\.contentKey))
+                    == Array(incoming.prefix(k).map(\.contentKey)) { overlap = k; break }
+            }
+        }
+        // 已知内容集合（按 side/sender/text 去重，不看时间）
+        var known = Set(existing.map(\.contentKey))
+        for line in incoming.dropFirst(overlap) {
+            if known.contains(line.contentKey) { continue }   // 回翻时读到的旧消息，去重
+            known.insert(line.contentKey)
+            existing.append(line)
+        }
+        // 每个会话最多留 300 条，避免文件无限增长
+        if existing.count > 300 { existing.removeFirst(existing.count - 300) }
+        conversations[sessionKey] = existing
+        ensureProfile(key: sessionKey, title: title, isGroup: isGroup)
+        save()
+    }
+
+    func conversation(in sessionKey: String) -> [ChatLine] {
+        conversations[sessionKey] ?? []
+    }
+
+    /// 最近 n 条聊天记录——交给判断层当上下文
+    func recentLines(in sessionKey: String, n: Int = 12) -> [ChatMsg] {
+        (conversations[sessionKey] ?? []).suffix(n).map {
+            ChatMsg(side: $0.side, sender: $0.sender, text: $0.text)
+        }
     }
 
     // MARK: 全局人物
@@ -335,6 +421,8 @@ final class AnalysisStore: ObservableObject {
            let v = try? dec.decode([String: SessionProfile].self, from: d) { profiles = v }
         if let d = try? Data(contentsOf: personURL),
            let v = try? dec.decode([String: Person].self, from: d) { persons = v }
+        if let d = try? Data(contentsOf: convoURL),
+           let v = try? dec.decode([String: [ChatLine]].self, from: d) { conversations = v }
     }
 
     private func save() {
@@ -344,5 +432,6 @@ final class AnalysisStore: ObservableObject {
         if let d = try? enc.encode(analyses) { try? d.write(to: historyURL, options: .atomic) }
         if let d = try? enc.encode(profiles) { try? d.write(to: profileURL, options: .atomic) }
         if let d = try? enc.encode(persons) { try? d.write(to: personURL, options: .atomic) }
+        if let d = try? enc.encode(conversations) { try? d.write(to: convoURL, options: .atomic) }
     }
 }

@@ -17,6 +17,11 @@ struct HistoryView: View {
         if c.isDateInYesterday(d) { return "昨天" }
         return d.formatted(.dateTime.month().day())
     }
+    /// 群聊和单聊分开看：群聊里"谁在跟谁说话"是一等公民，单聊没有这个问题。
+    /// 混在一起列，群聊一多就把单聊淹了。
+    private var groups: [ChatSession] { store.sessions.filter { $0.isGroup } }
+    private var directs: [ChatSession] { store.sessions.filter { !$0.isGroup } }
+
     var body: some View {
         NavigationStack {
             List {
@@ -26,70 +31,83 @@ struct HistoryView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                ForEach(store.sessions, id: \.key) { s in
-                    NavigationLink {
-                        SessionDetailView(sessionKey: s.key, store: store)
-                    } label: {
-                        HStack(spacing: 11) {
-                            AvatarView(title: s.title, isGroup: s.isGroup)
-                            VStack(alignment: .leading, spacing: 3) {
-                                HStack(spacing: 6) {
-                                    Text(s.title).font(.subheadline).bold().lineLimit(1)
-                                    Spacer(minLength: 4)
-                                    Text(Self.shortTime(s.lastAt))
-                                        .font(.caption2).foregroundStyle(.secondary)
-                                }
-                                HStack(spacing: 5) {
-                                    if store.isFollowed(s.key) {
-                                        Label("跟随中", systemImage: "target")
-                                            .font(.caption2).bold().foregroundStyle(.blue)
-                                    }
-                                    Text(store.lastPreview(in: s.key))
-                                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                                    Spacer(minLength: 4)
-                                    if store.profiles[s.key]?.notes.isEmpty == false {
-                                        Image(systemName: "checkmark.seal.fill")
-                                            .font(.caption2).foregroundStyle(.green)
-                                    }
-                                    Text("\(s.count)")
-                                        .font(.caption2).foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                        .padding(.vertical, 2)
-                    }
-                    .swipeActions(edge: .leading) {
-                        // 在会话列表里直接切换"只读这个会话"——比去主页面下拉选好用
-                        Button {
-                            store.toggleFollow(s.key)
-                        } label: {
-                            Label(store.isFollowed(s.key) ? "取消跟随" : "只读这个",
-                                  systemImage: store.isFollowed(s.key) ? "target.slash" : "target")
-                        }
-                        .tint(store.isFollowed(s.key) ? .gray : .blue)
-                    }
-                }
-                if !store.sessions.isEmpty {
+
+                if !groups.isEmpty {
                     Section {
-                        Text("记录只存本机（App 私有目录），不上传。原始截图不落盘。")
-                            .font(.caption).foregroundStyle(.secondary)
+                        ForEach(groups, id: \.key) { s in
+                            sessionRow(s)
+                        }
+                    } header: {
+                        Label("群聊（\(groups.count)）", systemImage: "person.3.fill")
+                    } footer: {
+                        Text("群聊记录会逐条带发言人累积，判断时用的是这段上下文，不是单张截图里的最后一句。")
                     }
                 }
 
-                // 全局人物：身份跨会话通用——同一个人在哪个群填过，所有群都认得
-                if !store.knownPeople.isEmpty {
+                if !directs.isEmpty {
                     Section {
-                        ForEach(store.knownPeople.prefix(20)) { p in
-                            PersonRow(person: p, store: store)
+                        ForEach(directs, id: \.key) { s in
+                            sessionRow(s)
                         }
                     } header: {
-                        Text("人物（身份跨会话通用）")
-                    } footer: {
-                        Text("在这里填一次，所有会话都认得这个人。会话详情里还能补「在本群的角色」。")
+                        Label("单聊（\(directs.count)）", systemImage: "person.fill")
+                    }
+                }
+
+                if !store.sessions.isEmpty {
+                    Section {
+                        Text("记录只存本机（App 私有目录），不上传。原始截图不落盘。"
+                             + "人物身份在「联系人」页统一维护。")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
             }
             .navigationTitle("记录")
+        }
+    }
+
+    @ViewBuilder
+    private func sessionRow(_ s: ChatSession) -> some View {
+        NavigationLink {
+            SessionDetailView(sessionKey: s.key, store: store)
+        } label: {
+            HStack(spacing: 11) {
+                AvatarView(title: s.title, isGroup: s.isGroup)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(s.title).font(.subheadline).bold().lineLimit(1)
+                        Spacer(minLength: 4)
+                        Text(Self.shortTime(s.lastAt))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    HStack(spacing: 5) {
+                        if store.isFollowed(s.key) {
+                            Label("跟随中", systemImage: "target")
+                                .font(.caption2).bold().foregroundStyle(.blue)
+                        }
+                        Text(store.lastPreview(in: s.key))
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        Spacer(minLength: 4)
+                        if store.profiles[s.key]?.notes.isEmpty == false {
+                            Image(systemName: "checkmark.seal.fill")
+                                .font(.caption2).foregroundStyle(.green)
+                        }
+                        Text("\(s.count)")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(.vertical, 2)
+        }
+        .swipeActions(edge: .leading) {
+            // 在会话列表里直接切换"只读这个会话"——比去主页面下拉选好用
+            Button {
+                store.toggleFollow(s.key)
+            } label: {
+                Label(store.isFollowed(s.key) ? "取消跟随" : "只读这个",
+                      systemImage: store.isFollowed(s.key) ? "target.slash" : "target")
+            }
+            .tint(store.isFollowed(s.key) ? .gray : .blue)
         }
     }
 }
@@ -136,44 +154,6 @@ struct AvatarView: View {
     }
 }
 
-/// 全局人物的编辑行：填一次，所有会话都生效
-struct PersonRow: View {
-    let person: Person
-    @ObservedObject var store: AnalysisStore
-    @State private var draft: String = ""
-    @State private var loaded = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: "person.crop.circle").font(.caption)
-                Text(person.displayName).font(.subheadline).bold()
-                Text("见过 \(person.seenCount) 次").font(.caption2).foregroundStyle(.secondary)
-                if !person.identity.isEmpty {
-                    Image(systemName: "checkmark.seal.fill").font(.caption2).foregroundStyle(.green)
-                }
-            }
-            if !person.aliases.isEmpty {
-                Text("另读到过：" + person.aliases.joined(separator: "、"))
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-            }
-            TextField("他是谁 / 什么角色（所有群通用）", text: $draft, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .font(.footnote)
-            Button("保存（全局）") {
-                store.setPersonIdentity(draft, name: person.displayName)
-            }
-            .font(.caption)
-        }
-        .padding(.vertical, 2)
-        .onAppear {
-            guard !loaded else { return }
-            draft = person.identity
-            loaded = true
-        }
-    }
-}
-
 /// 单个会话：档案编辑 + 该会话的全部分析记录
 struct SessionDetailView: View {
     let sessionKey: String
@@ -182,10 +162,20 @@ struct SessionDetailView: View {
     @State private var relationshipDraft: String = ""
     @State private var noteDrafts: [String: String] = [:]
     @State private var loaded = false
+    @State private var showAllLines = false
 
     private var profile: SessionProfile? { store.profiles[sessionKey] }
     private var items: [StoredAnalysis] { store.analyses(in: sessionKey) }
     private var people: [String] { store.speakers(in: sessionKey) }
+    private var isGroup: Bool { profile?.isGroup ?? items.first?.isGroup ?? false }
+
+    /// 累积下来的对话流。这是"感知只读了一条消息"这个误解的正面回答：
+    /// 每帧读到的消息会并进这里，判断层用的就是它。
+    private var transcript: [ChatLine] { store.conversation(in: sessionKey) }
+    private var shownLines: [ChatLine] {
+        showAllLines ? transcript : Array(transcript.suffix(60))
+    }
+    private var transcriptTitle: String { isGroup ? "群聊记录" : "聊天记录" }
 
     var body: some View {
         List {
@@ -236,6 +226,51 @@ struct SessionDetailView: View {
                         .padding(.vertical, 2)
                     }
                 }
+            }
+
+            // ---- 群聊记录（累积的对话，逐条带发言人）----
+            Section {
+                if transcript.isEmpty {
+                    Text("还没有累积到对话。每次分析都会把那一屏读到的消息并进来，"
+                         + "同一个会话只留一份（重叠的部分自动去重）。")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ForEach(shownLines) { line in
+                        HStack(alignment: .top, spacing: 7) {
+                            if line.side == "me" { Spacer(minLength: 30) }
+                            VStack(alignment: line.side == "me" ? .trailing : .leading,
+                                   spacing: 2) {
+                                HStack(spacing: 5) {
+                                    if line.side != "me", let sd = line.sender, !sd.isEmpty {
+                                        Text(sd).font(.caption2).bold()
+                                    }
+                                    Text(line.at.formatted(date: .omitted, time: .shortened))
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                }
+                                Text(line.text)
+                                    .font(.footnote)
+                                    .padding(.horizontal, 8).padding(.vertical, 5)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                            .fill(line.side == "me"
+                                                  ? Color.accentColor.opacity(0.18)
+                                                  : Color.gray.opacity(0.14)))
+                            }
+                            if line.side != "me" { Spacer(minLength: 30) }
+                        }
+                        .padding(.vertical, 1)
+                    }
+                    if transcript.count > shownLines.count {
+                        Button("显示全部 \(transcript.count) 条") { showAllLines = true }
+                            .font(.caption)
+                    }
+                }
+            } header: {
+                Label("\(transcriptTitle)（\(transcript.count) 条）",
+                      systemImage: "bubble.left.and.bubble.right")
+            } footer: {
+                Text("这是判断时真正喂给模型的上下文（最多 \(JevPipeline.maxMessagesInState) 条），"
+                     + "不是单张截图的最后一句。左侧气泡是别人说的，右侧是我说的。")
             }
 
             // ---- 分析记录 ----
