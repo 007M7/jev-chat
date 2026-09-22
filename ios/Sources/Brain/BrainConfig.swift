@@ -57,18 +57,42 @@ enum BrainConfig {
         )
     }
 
-    /// providers.json 里出现过的所有密钥环境变量名（设置页据此逐项让用户填）
+    /// 设置页要显示的密钥字段 = **当前被角色实际用到的 provider 所需的环境变量**。
+    ///
+    /// 只列三个角色（judge / analysis / perception）指向的 provider，
+    /// 不把配置里存在但没启用的 provider（例如备用的 openrouter_*）也列出来——
+    /// 否则用户会看到用不到的输入框，不知道该填哪个。
+    ///
+    /// 坑（实测踩过）：`api_key_optional` **缺失时必须当作 false（必需）**。
+    /// 曾经写成 `p["api_key_optional"] as? Bool, !optional`，没有该字段的 provider
+    /// 会因为 `as? Bool` 返回 nil 而被整个跳过，七个 provider 全被跳光，
+    /// 设置页一个输入框都不显示。
     static func allKeyNames() -> [String] {
         guard let cfg = loadJSON("providers"),
               let providers = cfg["providers"] as? [String: Any] else { return [] }
-        var seen: [String] = []
-        for (_, v) in providers {
-            guard let p = v as? [String: Any],
-                  let optional = p["api_key_optional"] as? Bool, !optional,
-                  let name = p["api_key_env"] as? String, !name.isEmpty else { continue }
-            if !seen.contains(name) { seen.append(name) }
+
+        func envName(ofProvider id: String) -> String? {
+            guard let p = providers[id] as? [String: Any],
+                  let name = p["api_key_env"] as? String, !name.isEmpty else { return nil }
+            let isOptional = (p["api_key_optional"] as? Bool) ?? false
+            return isOptional ? nil : name
         }
-        return seen.sorted()
+
+        var names: [String] = []
+        let roles = (cfg["roles"] as? [String: Any]) ?? [:]
+        for role in ["judge", "analysis", "perception"] {
+            guard let pid = roles[role] as? String, let n = envName(ofProvider: pid) else { continue }
+            if !names.contains(n) { names.append(n) }
+        }
+
+        // 兜底：roles 没配全时，退回到"所有非可选 provider 的密钥"，
+        // 保证设置页永远不会空着（空着用户就没法填密钥）
+        if names.isEmpty {
+            for (id, _) in providers {
+                if let n = envName(ofProvider: id), !names.contains(n) { names.append(n) }
+            }
+        }
+        return names.sorted()
     }
 
     /// 感知层的 system prompt（来自 prompts.json，与 Python/桌面版同一份）
