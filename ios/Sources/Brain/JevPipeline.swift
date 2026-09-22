@@ -238,8 +238,12 @@ final class JevPipeline {
         var isGroup: Bool
     }
 
+    /// - Parameter skipDraft: 跳过起草候选与排序，只出判断。
+    ///   实测起草+排序占总耗时的一半左右（感知 4~7s / 判断 1s / 起草 2~7s / 排序 1s），
+    ///   所以"只想知道对方什么意思、不要候选"时能省掉一半时间。
     func analyze(image: UIImage,
                  sessionHint: SessionHint? = nil,
+                 skipDraft: Bool = false,
                  profileProvider: ProfileProvider? = nil) async throws -> JevAnalysis {
         let t0 = Date()
 
@@ -459,6 +463,7 @@ final class JevPipeline {
         draftUserText += "\n\n" + verdictLines.joined(separator: "\n")
 
         var candidates: [String] = []
+        if !skipDraft {
         do {
             let draftBody: [String: Any] = [
                 "model": analysis.model,
@@ -476,10 +481,14 @@ final class JevPipeline {
             // 起草失败不该让整次分析失败：判断结果仍然有价值
             candidates = []
         }
-        while candidates.count < 3 { candidates.append("（稍等，我看下）") }
+        }
+        if !skipDraft {
+            while candidates.count < 3 { candidates.append("（稍等，我看下）") }
+        }
 
         // ---- 6) 排序 ----
         var ranked = candidates
+        if !skipDraft {
         do {
             let rankQ: [String: Any] = [
                 "best_reply": [
@@ -501,6 +510,7 @@ final class JevPipeline {
             ranked = scored.map { $0.0 }
         } catch {
             // 排序失败就用原始顺序
+        }
         }
 
         // 语境的不确定处如实记下来，显示给用户——不假装确定
@@ -542,9 +552,19 @@ final class JevPipeline {
         )
     }
 
-    /// 消息内容签名：取最后 6 条（与安卓 ChatModels.signature 同思路）。
-    /// 用于内容级去重——像素会因噪声微变，但对话没变就不该重复分析。
+    /// 消息内容签名：取最后 8 条（与安卓 ChatModels.signature 同思路），**用于内容级去重**。
+    ///
+    /// 关键细节：**非文本消息只按类型入签名，不带描述**。
+    /// 实测踩过——用户在不同界面翻阅不同图片时，图片描述每次都不同，于是签名每次都变、
+    /// 去重失效，同一句「慢 有办法解决没」被反复分析了三次（19:54/55/56）。
+    /// 改用稳定的 `[图片]` / `[表情包]` 占位后，这类噪声不会再触发重复分析。
     static func signature(of msgs: [(side: String, text: String, sender: String?)]) -> String {
-        msgs.suffix(6).map { "\($0.side):\($0.text)" }.joined(separator: "|")
+        func stable(_ text: String) -> String {
+            guard text.hasPrefix("["), let close = text.firstIndex(of: "]") else { return text }
+            let inner = text[text.index(after: text.startIndex)..<close]
+            let kind = inner.split(separator: "：").first.map(String.init) ?? String(inner)
+            return "[\(kind)]"
+        }
+        return msgs.suffix(8).map { "\($0.side):\(stable($0.text))" }.joined(separator: "|")
     }
 }

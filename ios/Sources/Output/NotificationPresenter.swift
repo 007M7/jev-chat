@@ -53,6 +53,19 @@ final class NotificationPresenter: NSObject {
         }
     }
 
+    /// 快速模式（只出判断、没有候选）时的通知：只报结论，不带候选按钮。
+    func presentVerdict(headline: String, chatTitle: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "Jev · \(chatTitle)"
+        content.body = headline
+        content.interruptionLevel = .active
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        ) { error in
+            if let error { NSLog("[Jev] 结论通知发送失败: \(error.localizedDescription)") }
+        }
+    }
+
     /// 后台动作里没法弹 UI，用一条静默通知给用户反馈——否则他无法确认"复制成功了没有"
     private func confirmCopied(_ text: String) {
         let c = UNMutableNotificationContent()

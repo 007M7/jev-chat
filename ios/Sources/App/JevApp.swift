@@ -63,10 +63,40 @@ final class AppBridge: ObservableObject {
     private var lastAnalysisAt: Date?
     @Published private(set) var skippedAsRepeat = 0
     @Published private(set) var skippedNotChat = 0
+    @Published private(set) var skippedNotTarget = 0
+
+    /// 自动分析开关。关掉后只有手动点"立刻分析一次"才会跑。
+    /// 用户要求：不要无条件隔十几秒就读一次——由他决定这个功能开不开。
+    @Published var autoAnalyze: Bool {
+        didSet { UserDefaults.standard.set(autoAnalyze, forKey: Self.kAuto) }
+    }
+    /// **只跟随这个会话**（nil = 不限制）。
+    /// 这是"只要对应窗口的信息"的落点：iOS 拿不到前台 App 标识，
+    /// 但能通过会话标题判断"现在这个界面是不是我要跟的那个聊天"。
+    /// 实测踩过：用户在 QQ 里发截图时，QQ 的界面被当成群聊分析了三次。
+    @Published var followSessionKey: String? {
+        didSet { UserDefaults.standard.set(followSessionKey, forKey: Self.kFollow) }
+    }
+    /// 快速模式：只出判断，不生成候选。实测能省掉约一半耗时（起草+排序占总耗时约一半）。
+    @Published var fastMode: Bool {
+        didSet { UserDefaults.standard.set(fastMode, forKey: Self.kFast) }
+    }
+
+    private static let kAuto = "jev_auto_analyze"
+    private static let kFollow = "jev_follow_session"
+    private static let kFast = "jev_fast_mode"
 
     func setUp() {
         // 通知的注册已经在 AppDelegate 里做了；这里只补一次以免首帧竞态
         notifications.register()
+        // 读回用户上次的选择（默认：自动开、不限制会话）
+        if UserDefaults.standard.object(forKey: Self.kAuto) != nil {
+            autoAnalyze = UserDefaults.standard.bool(forKey: Self.kAuto)
+        }
+        followSessionKey = UserDefaults.standard.string(forKey: Self.kFollow)
+        if UserDefaults.standard.object(forKey: Self.kFast) != nil {
+            fastMode = UserDefaults.standard.bool(forKey: Self.kFast)
+        }
     }
 
     /// 变化检测门放行一帧 → 跑一次完整分析 → 弹候选通知 → 记入本地记录
@@ -74,10 +104,15 @@ final class AppBridge: ObservableObject {
     /// 这里刻意做成"来了就跑"，而不是等用户点按钮：感知+判断+起草合计 8~16 秒
     /// （实测感知 7s、总 13.8s），等用户看向面板时结果已经在了，
     /// 比压模型延迟更实际。
-    func handleStableFrame(_ image: UIImage) {
+    func handleStableFrame(_ image: UIImage, force: Bool = false) {
         guard !isAnalyzing else { return }          // 上一次还没跑完就跳过，避免堆积
         guard !BrainConfig.allKeyNames().isEmpty else {
             status = "还没配密钥，去设置里填"
+            return
+        }
+        // 自动分析关着时，只有手动触发才跑（用户要求"由我决定这个功能开不开"）
+        if !force && !autoAnalyze {
+            status = "自动分析已关闭（可在上面打开，或手动分析一次）"
             return
         }
         // 冷却期：刚弹过通知就别抓，否则会把自己的横幅读成聊天内容
@@ -98,7 +133,7 @@ final class AppBridge: ObservableObject {
             do {
                 // 会话档案在**感知拿到标题之后**才取（见 pipeline 里的说明）：
                 // 用上一次的标题猜档案会把上一个会话的身份注入进来，那比不注入更糟。
-                let a = try await pipeline.analyze(image: image, sessionHint: lastSession) { [weak self] title, isGroup in
+                let a = try await pipeline.analyze(image: image, sessionHint: lastSession, skipDraft: fastMode) { [weak self] title, isGroup in
                     guard let self else { return ("", nil) }
                     let key = self.store.sessionKey(for: title, isGroup: isGroup)
 
@@ -122,8 +157,6 @@ final class AppBridge: ObservableObject {
                 analysisCount += 1
                 status = String(format: "分析完成 · 感知 %.1fs 总 %.1fs", a.perceptionSeconds, a.totalSeconds)
 
-                // ---- 三重过滤：不该记也不该弹的情况 ----
-
                 // 1) 不是聊天界面：感知没读到任何消息（在桌面、别的 App、聊天列表页……）
                 if a.messageCount == 0 {
                     skippedNotChat += 1
@@ -132,8 +165,17 @@ final class AppBridge: ObservableObject {
                     return
                 }
 
-                // 2) 内容没变：与上次分析过的同一会话消息签名相同
+                // 2) **不是我要跟的那个会话**：用户在别的 App / 别的聊天里时不该产出结果。
+                //    实测踩过——用 QQ 发截图时，QQ 界面被当成群聊分析了三次。
                 let skey = store.sessionKey(for: a.chatTitle, isGroup: a.isGroup)
+                if let target = followSessionKey, target != skey {
+                    skippedNotTarget += 1
+                    status = "当前不在跟随的会话里（\(a.chatTitle)），已跳过"
+                    isAnalyzing = false
+                    return
+                }
+
+                // 3) 内容没变：与上次分析过的同一会话消息签名相同
                 if let prev = lastSignature[skey], prev == a.messageSignature {
                     skippedAsRepeat += 1
                     status = "对话内容与上次相同，已跳过"
@@ -141,7 +183,7 @@ final class AppBridge: ObservableObject {
                     return
                 }
 
-                // 3) 回声：最新消息就是自己刚弹的候选（notification 横幅被读进来）
+                // 4) 回声：最新消息就是自己刚弹的候选（notification 横幅被读进来）
                 if JevPipeline.looksLikeOurEcho(a.latestText, recentCandidates: recentCandidates) {
                     skippedAsEcho += 1
                     status = "这一帧读到了自己的通知，已丢弃"
@@ -170,15 +212,19 @@ final class AppBridge: ObservableObject {
                     lastSession = JevPipeline.SessionHint(title: a.chatTitle, isGroup: a.isGroup)
                 }
 
-                // 结果走通知（3 个候选按钮）
+                // 结果走通知。有候选就带 3 个按钮；快速模式下没有候选，只弹结论。
                 let dangerText = String(format: "%.0f", a.danger)
                 let headline = "\(a.dangerLabel) \(dangerText)/9 · \(a.intentLabel) · \(a.actionAdvice)"
-                notifications.present(
-                    candidates: a.candidates,
-                    headline: headline,
-                    chatTitle: a.chatTitle,
-                    analysisID: rec.id
-                )
+                if a.candidates.isEmpty {
+                    notifications.presentVerdict(headline: headline, chatTitle: a.chatTitle)
+                } else {
+                    notifications.present(
+                        candidates: a.candidates,
+                        headline: headline,
+                        chatTitle: a.chatTitle,
+                        analysisID: rec.id
+                    )
+                }
                 // 记住了这次弹了什么：接下来的 10 秒不抓帧，同时用于回声检测
                 recentCandidates = a.candidates
                 suppressUntil = Date().addingTimeInterval(10)
@@ -197,9 +243,9 @@ final class AppBridge: ObservableObject {
         }
     }
 
-    /// 用界面里"最近一帧"手动跑一次（不依赖门放行），方便调试
+    /// 用界面里"最近一帧"手动跑一次（不依赖门放行、也不受自动开关限制），方便调试
     func analyzeNow(_ image: UIImage) {
-        handleStableFrame(image)
+        handleStableFrame(image, force: true)
     }
 
     /// 输出通道自测：不跑模型，直接弹一条假候选。

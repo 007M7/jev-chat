@@ -8,6 +8,7 @@ import SwiftUI
 struct ProbeView: View {
     @ObservedObject var capture: CaptureController
     @ObservedObject var bridge: AppBridge
+    @ObservedObject private var store = AnalysisStore.shared
 
     @State private var showSettings = false
     @State private var showDiagnostics = false
@@ -20,6 +21,7 @@ struct ProbeView: View {
         NavigationStack {
             List {
                 captureSection
+                behaviorSection
                 analysisSection
                 diagnosticsSection
             }
@@ -32,6 +34,32 @@ struct ProbeView: View {
                 }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
+        }
+    }
+
+    // MARK: 行为（用户自己决定读不读、读哪个）
+
+    private var behaviorSection: some View {
+        Section {
+            Toggle("自动分析", isOn: $bridge.autoAnalyze)
+            Toggle("快速模式（只出判断，不生成候选）", isOn: $bridge.fastMode)
+
+            Picker("只跟随这个会话", selection: $bridge.followSessionKey) {
+                Text("不限制（屏幕上是什么就读什么）").tag(String?.none)
+                ForEach(store.sessions, id: \.key) { s in
+                    Text(s.title).tag(String?.some(s.key))
+                }
+            }
+
+            Button("用最近一帧立刻分析一次") {
+                if let img = capture.lastFrame { bridge.analyzeNow(img) }
+            }
+            .disabled(capture.lastFrame == nil || bridge.isAnalyzing)
+        } header: {
+            Text("读什么")
+        } footer: {
+            Text("「只跟随这个会话」是给「我一边在微信聊天、一边又去用别的 App」这种情况准备的："
+                 + "不定死目标时，屏幕上任何像聊天的界面（比如你在 QQ 里翻截图）都会被当成对话分析。")
         }
     }
 
@@ -131,6 +159,7 @@ struct ProbeView: View {
                 LabeledContent("内容未变而跳过", value: "\(bridge.skippedAsRepeat) 次")
                 LabeledContent("非聊天界面跳过", value: "\(bridge.skippedNotChat) 次")
                 LabeledContent("自己通知污染跳过", value: "\(bridge.skippedAsEcho) 次")
+                LabeledContent("不在跟随会话而跳过", value: "\(bridge.skippedNotTarget) 次")
                 LabeledContent("变化检测门", value: capture.gateStatus)
                 LabeledContent("放行去分析", value: "\(capture.stableFrameCount) 次 / 共 \(capture.totalFrames) 帧")
                 LabeledContent("帧尺寸", value: capture.frameSize)
