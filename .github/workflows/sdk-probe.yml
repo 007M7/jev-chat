@@ -88,7 +88,6 @@ jobs:
             cfg.showsMicrophoneControl = false
             cfg.showsCameraControl = false
             picker.defaultConfiguration = cfg
-            picker.presentPicker(usingContentStyle: .display)
             picker.present()
           }
 
@@ -104,14 +103,27 @@ jobs:
           cat -n /tmp/typecheck.swift
           echo
           echo "===== swiftc 结果 ====="
-          # 只做类型检查，不产出二进制。失败时把 error 原文打出来。
-          if xcrun swiftc -typecheck -sdk "$SDK" -target arm64-apple-ios27.0 \
-               /tmp/typecheck.swift 2>&1; then
-            echo "✅ 全部通过：上面用到的 API 名字与可用性都对"
-          else
-            echo "❌ 有不通过的地方，看上面的 error 行"
-            exit 1
-          fi
+          # 只做类型检查，不产出二进制。有 error: 行说明名字/可用性有问题。
+          # 实测它已经抓到过一次：presentPicker(usingContentStyle:) 这个名字根本不存在。
+          xcrun swiftc -typecheck -sdk "$SDK" -target arm64-apple-ios27.0 \
+               /tmp/typecheck.swift 2>&1
+          echo "（上面没有 error: 行就是全通过）"
+
+      # 查"某段 ObjC API 导入 Swift 后的确切名字"。typecheck 只会说"没有这个成员"，
+      # 不告诉你正确名字——这一步把整段 API 面导出成 JSON 再筛出来。
+      - name: 导出 Swift API 面（查确切名字用）
+        continue-on-error: true
+        run: |
+          SDK="${{ steps.find.outputs.sdk }}"
+          xcrun swift-api-digester -dump-sdk \
+            -module ScreenCaptureKit \
+            -o /tmp/scapi.json \
+            -sdk "$SDK" \
+            -target arm64-apple-ios27.0 2>&1 | tail -5
+          echo "===== 名字里带 picker / present 的声明 ====="
+          grep -oE '"printedName" *: *"[^"]*"' /tmp/scapi.json \
+            | sed 's/.*: *"//; s/"$//' | sort -u \
+            | grep -iE 'picker|present' || echo "（没筛出来）"
 
       - name: 打印 ScreenCaptureKit 的完整可用面
         run: |
