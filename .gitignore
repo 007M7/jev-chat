@@ -67,3 +67,6 @@ ios/*.ipa
 
 # iOS 构建时从 tools/jev 拷入的共享配置（不在仓库里存副本）
 ios/Resources/
+
+# 标注/核对表输出（含真实聊天摘录，禁止入库）
+tools/jev/out/

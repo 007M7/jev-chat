@@ -35,7 +35,9 @@ def load_python_prompt() -> str:
 
 def write_canonical() -> int:
     sys.path.insert(0, str(SPIKE))
+    sys.path.insert(0, str(ROOT))
     import vlm_extract as vx  # noqa: E402
+    import memory as mem  # noqa: E402
 
     data = {
         "_comment": (
@@ -49,6 +51,14 @@ def write_canonical() -> int:
             "user_text": "请把这张聊天截图还原成结构化 JSON。",
             "user_text_textonly": "请把这张聊天截图还原成结构化 JSON。只保留文本消息，忽略表情包/图片/语音。",
             "max_messages": vx.MAX_HISTORY,
+        },
+        # 记忆蒸馏 prompt：与 tools/jev/memory.py 的 DISTILL_PROMPT 同一份。
+        # iOS 侧读它来"从对话里提取值得记住的事实"，不再需要用户手填身份。
+        "memory_distill": {
+            "system_prompt": mem.DISTILL_PROMPT,
+            "user_template": "会话名称：{title}\n\n最近对话：\n{convo}{known}\n\n请提取值得长期记住的事实。",
+            "max_messages": 20,
+            "note": "每条记忆必须带 evidence（消息原文）；没有出处的不许入库",
         },
     }
     PROMPTS.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -72,6 +82,19 @@ def verify() -> int:
         )
 
     checked = 1
+    # 记忆蒸馏 prompt 也要与 memory.py 一致（iOS 侧要用它做"从对话提取记忆"）
+    import memory as mem  # noqa: E402
+
+    md = (canon.get("memory_distill") or {}).get("system_prompt")
+    checked += 1
+    if md is None:
+        problems.append("prompts.json 里缺少 memory_distill.system_prompt")
+    elif md != mem.DISTILL_PROMPT:
+        problems.append(
+            f"memory_distill.system_prompt 与 memory.DISTILL_PROMPT 不一致"
+            f"（json {len(md)} 字符 / python {len(mem.DISTILL_PROMPT)} 字符）"
+        )
+
     # Swift 侧只检查"是否从 bundle 读"，不重复 prompt 正文——
     # 正文在 Swift 里出现即说明有人手抄了，那才是要防的。
     if SWIFT_PERCEPTION.exists():
@@ -85,13 +108,13 @@ def verify() -> int:
             problems.append("PerceptionClient.swift 里出现了 prompt 正文——必须改成从 prompts.json 读，不要手抄")
 
     print(f"校验项: {checked}")
-    print(f"prompt: {len(expected)} 字符")
+    print(f"感知 prompt: {len(expected)} 字符   记忆蒸馏 prompt: {len(md) if md else 0} 字符")
     if problems:
         print(f"\n不一致 {len(problems)} 处：")
         for p in problems:
             print(f"  ✗ {p}")
         return 1
-    print("\n结论: prompts.json 与 Python 侧一致，Swift 侧走 bundle 读取")
+    print("\n结论: prompts.json 与 Python 侧一致（感知 + 记忆蒸馏），Swift 侧走 bundle 读取")
     return 0
 
 

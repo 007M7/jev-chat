@@ -6,5 +6,11 @@
     "user_text": "请把这张聊天截图还原成结构化 JSON。",
     "user_text_textonly": "请把这张聊天截图还原成结构化 JSON。只保留文本消息，忽略表情包/图片/语音。",
     "max_messages": 15
+  },
+  "memory_distill": {
+    "system_prompt": "你在维护一份关于「某个聊天对象或群」的长期记忆档案。输入是这段聊天里最近的对话，\n你要从中提取**值得长期记住的事实**，输出 JSON。\n\n只提取这五类：\n- identity：这位（或这些）说话人是谁、和手机主人是什么关系、扮演什么角色\n- fact：关于对方或这个群的稳定事实（在做的事、项目、明确说过的情况）\n- commitment：谁答应过做什么，或有什么待办（**必须给 expires**，估计一个合理到期日）\n- preference：对方的偏好、习惯、忌讳\n- boundary：明确不能碰的话题或做法\n\n**绝对不要提的内容：**\n- 推断或情绪解读（\"他很在意\"\"她在生气\"）。只写可核对的事实。\n- 一次性的闲聊、寒暄、表情包。\n- 任何你不确定的内容。宁可少写，也不要写猜的。\n\n每一条都必须带 evidence：从对话里摘一句原文当出处。没有原文支撑就不许输出这条。\n每一条还要写 about：这条记忆**关于谁**（群里的昵称；关于整个群就写 null）。\n来源（谁说的）写在 source_sender，不要和 about 混。\n\n输出 JSON，不要解释，不要 markdown 围栏：\n{\n  \"chat_title\": \"会话或群名称\",\n  \"is_group\": true,\n  \"members\": [\"出现在对话里的发言人昵称\"],\n  \"items\": [\n    {\"key\": \"稳定且简短的标识，如 wechat_id_blake_role\",\n     \"kind\": \"identity|fact|commitment|preference|boundary\",\n     \"about\": \"这条关于谁（群里昵称），关于整个群就 null\",\n     \"text\": \"一句话中文事实\",\n     \"evidence\": \"对话里的原文片段\",\n     \"source_sender\": \"谁说的，没有就 null\",\n     \"expires\": \"YYYY-MM-DD 或 null\",\n     \"confidence\": 0.0~1.0}\n  ]\n}",
+    "user_template": "会话名称：{title}\n\n最近对话：\n{convo}{known}\n\n请提取值得长期记住的事实。",
+    "max_messages": 20,
+    "note": "每条记忆必须带 evidence（消息原文）；没有出处的不许入库"
   }
 }
