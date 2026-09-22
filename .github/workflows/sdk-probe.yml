@@ -69,21 +69,33 @@ jobs:
             grep -nE "$PATTERN" $files | head -400 || true
           fi
 
-      - name: 全量列出 SCContentSharingPicker / SCContentFilter 的成员
+      - name: 打印 ScreenCaptureKit 的完整可用面
         run: |
-          set -euo pipefail
           SDK="${{ steps.find.outputs.sdk }}"
-          f=$(find "$SDK/System/Library/Frameworks/ScreenCaptureKit.framework" \
-                -name '*.swiftinterface' 2>/dev/null | head -1)
-          echo "文件：$f"
-          echo
-          for T in SCContentSharingPicker SCContentSharingPickerConfiguration SCContentFilter SCStreamConfiguration SCContentSharingPickerMode; do
-            echo "=================== $T ==================="
-            # 该类型的声明行 + 之后 60 行（够覆盖成员列表）
-            grep -nE "^(public )?(final )?(class|struct|enum|protocol) $T\b|extension $T\b|class $T\b|struct $T\b" "$f" \
-              | head -5 | while IFS=: read -r ln _; do
-                  echo "  （第 $ln 行起）"
-                  sed -n "${ln},$((ln+60))p" "$f"
-                done || echo "  （这个 SDK 里没有 $T）"
+          FW="$SDK/System/Library/Frameworks/ScreenCaptureKit.framework"
+
+          # 关键：**不能只看 .swiftinterface**。Swift 界面里的成员可能带 macOS-only
+          # 标注（`allowedPickerModes` 就是先写了代码才在云构建上发现 iOS 不可用），
+          # 所以要把头文件里的 API_AVAILABLE 一起看——那里才写清了 ios(27.0) 还是 macos(15.0)。
+
+          swift_if=$(find "$FW" -name '*.swiftinterface' | head -1)
+          echo "############ swiftinterface 全文 ############"
+          echo "# 文件：$swift_if"
+          echo "# 总行数：$(wc -l < "$swift_if")（下面最多打 700 行）"
+          cat -n "$swift_if" | head -700
+
+          for h in SCContentSharingPicker.h SCShareableContent.h; do
             echo
+            echo "############ Headers/$h （前 400 行）############"
+            cat -n "$FW/Headers/$h" 2>/dev/null | head -400
           done
+
+          echo
+          echo "############ 头文件里所有 API_AVAILABLE 行（看 iOS/macOS 归属）############"
+          grep -rhn "API_AVAILABLE\|API_UNAVAILABLE" "$FW/Headers/" 2>/dev/null | head -200
+
+          echo
+          echo "############ 搜 persist / selectedFilter / NSSecureCoding / NSCoding ############"
+          grep -rn "persist\|Persist\|selectedFilter\|NSSecureCoding\|NSCoding\|archive" \
+               "$FW/Headers/" "$swift_if" 2>/dev/null | head -80
+          echo "（以上为全部命中）"
