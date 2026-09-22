@@ -53,10 +53,12 @@ final class ScreenCaptureEngine: NSObject {
     ///   `picker.defaultConfiguration = ...; activatePicker(); picker.present()`
     /// 我第一版漏了它，症状与用户反馈完全一致。
     ///
-    /// `presentPicker(usingContentStyle: .display)` 比 `present()` 少一步：
-    /// 直接进到"选屏幕"这一步，不再让用户先选"要共享窗口还是屏幕"。
-    /// iPhone 上能共享的本来就只有整屏，所以这一步是纯多余。`.display` 在
-    /// iOS 27 是可用的（`SCShareableContentStyleDisplay` 标了 ios(27.0)）。
+    /// `presentPicker(usingContentStyle:)` 想省掉"选窗口还是屏幕"那一步：
+    /// 直接进到"选屏幕"。**但这个 Swift 名字是错的**——真 SDK 的 swiftc -typecheck
+    /// 报 `value of type 'SCContentSharingPicker' has no member 'presentPicker'`
+    /// （见 .github/workflows/sdk-probe.yml 的类型检查步骤）。
+    /// ObjC 的 `presentPickerUsingContentStyle:` 导入 Swift 后叫什么名字，
+    /// 只能查 API 面，不能推。先用已真机验证过的 `present()`。
     func requestPermission() {
         let picker = SCContentSharingPicker.shared
         picker.add(self)                 // 注册观察者，这样才能收到用户选定的 filter
@@ -67,7 +69,7 @@ final class ScreenCaptureEngine: NSObject {
         picker.defaultConfiguration = config
 
         // 先问系统"这台设备上屏幕录制到底可不可用"，避免失败时只有一个含糊的错误。
-        // （`isAvailable` 是 iOS 27 新增，SDK 头文件标了 ios(27.0)。）
+        // （`isAvailable` 是 iOS 27 新增，SDK 头文件标了 ios(27.0)，已通过类型检查。）
         guard picker.isAvailable else {
             onError?("系统不允许屏幕录制：到「设置 → 隐私与安全性 → 屏幕录制」里允许本 App，然后重试。")
             onStatus?("未获屏幕录制权限")
@@ -76,7 +78,7 @@ final class ScreenCaptureEngine: NSObject {
 
         picker.isActive = true           // ← 关键，漏了它 present() 无效
         onStatus?("等待你在系统选择器里确认共享屏幕…")
-        picker.presentPicker(usingContentStyle: .display)
+        picker.present()
     }
 
     /// 首次：拿到 filter 后建流并开播。
