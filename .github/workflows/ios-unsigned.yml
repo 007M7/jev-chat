@@ -18,8 +18,14 @@ jobs:
     # 必须是带 Xcode 27 的镜像 —— ScreenCaptureKit 的 iOS 版从 iOS 27 SDK 才有。
     # 实测 macos-15 上只有 Xcode 26.3 / iOS 26.2 SDK，会直接编译失败。
     # actions/runner-images 的可用标签里，`xcode-27` 是带 Xcode 27 的镜像（arm64，preview）。
-    # 如果这个标签在你的账号下不可用，日志第一步就会报 "no runner matching the specified labels"，
-    # 那时需要自建 runner 或等正式镜像（见 ios/README.md 的备选方案）。
+    #
+    # **实测坑：这个 preview 镜像经常抢不到机器**（官方公告原文：
+    # "The image is marked as preview for now... there could be queueing issues as the
+    #  capacity will be balanced only throughout the next weeks."）。
+    # 症状很隐蔽：run 在 ~11 秒内就 completed/failure，**runner_name 为空、steps 为空**
+    # （作业根本没被分配），看起来像构建失败但其实是没排上队。
+    # 判定方法：gh api repos/OWNER/REPO/actions/runs/<id>/jobs --jq '.jobs[0] | {runner_name, steps: (.steps|length)}'
+    # 处理：等几分钟重试即可；标签本身是有效的。
     runs-on: xcode-27
     timeout-minutes: 40
 

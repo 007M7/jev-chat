@@ -49,6 +49,13 @@ targets:
           - screen-capture
         # 存最近一帧到相册，用来人工核对"到底截到了什么"
         NSPhotoLibraryAddUsageDescription: 保存采集到的截图，用于核对识别结果
+        # **打开文件共享**：让 App 沙盒里的记录 JSON 在「文件」App 里可见、可拷出来。
+        # 这是"用真实数据校准群聊题目集 / 在 PC 上蒸馏记忆"的前提——
+        # 记录出不来，闭环就断在手机上。两个键都要：
+        #   UIFileSharingEnabled 让 Documents 出现在「文件」App 里
+        #   LSSupportsOpeningDocumentsInPlace 让别的 App 能就地打开它
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jev.assistant
