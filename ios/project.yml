@@ -6,8 +6,13 @@ name: JevAssistant
 
 options:
   bundleIdPrefix: com.jev
+  # 最低系统定 26.0，而不是 27.0。原因：用户的手机实测是 iOS 26.6.2，
+  # 定 27.0 会导致**装都装不上**。采集能力本身确实需要 iOS 27
+  # （ScreenCaptureKit 的 iOS 版从 27.0 才有），但那部分代码已经被
+  # `@available(iOS 27.0, *)` 关在 ScreenCaptureEngine 里，运行时才决定是否启用。
+  # 这样同一个包：iOS 26 能装能跑（无采集，但通知/灵动岛可验），iOS 27 自动获得采集。
   deploymentTarget:
-    iOS: "27.0"          # ScreenCaptureKit 的 iOS 版从 27.0 起提供（Apple 文档 introducedAt: 27.0）
+    iOS: "26.0"
   createIntermediateGroups: true
 
 settings:
@@ -46,6 +51,10 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.jev.assistant
         TARGETED_DEVICE_FAMILY: "1"      # 只做 iPhone
         GENERATE_INFOPLIST_FILE: "NO"
+        # ScreenCaptureKit 在 iOS 26 上根本不存在，所以必须弱链接：
+        # 否则在 iOS 26 设备上启动时 dyld 会因为找不到框架直接崩溃。
+        # 代码侧由 `@available(iOS 27.0, *)` 保证不去碰它。
+        OTHER_LDFLAGS: "-weak_framework ScreenCaptureKit"
     dependencies:
       - target: JevWidget
         embed: true

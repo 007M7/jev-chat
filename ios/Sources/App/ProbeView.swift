@@ -49,10 +49,26 @@ struct ProbeView: View {
                  + "只有画面稳定且与上次不同时才放行。放行次数远小于帧数就说明闸门在工作。")
                 .font(.footnote).foregroundStyle(.secondary)
 
+            if !capture.captureSupported {
+                // iOS 26 等旧系统的真实情况：App 能装能跑，但采集能力不存在
+                // （ScreenCaptureKit 的 iOS 版从 27.0 才有）。如实告知，不要静默失败。
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("此系统不支持采集").font(.subheadline).bold().foregroundStyle(.orange)
+                    Text("ScreenCaptureKit 的 iOS 版从 iOS 27 才有。当前系统是 iOS "
+                         + UIDevice.current.systemVersion
+                         + "。升级到 iOS 27 后同一个包会自动获得采集能力，不需要重新安装。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Text("通知横幅与灵动岛仍然可以测（下面「输出通道自测」）。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+            }
+
             if capture.isCapturing {
                 Button("停止采集", role: .destructive) { capture.stop() }
             } else {
                 Button("开始采集（会弹出系统选择器）") { capture.requestPermissionAndStart() }
+                    .disabled(!capture.captureSupported)
             }
             Button("把最近一帧存到相册（用来核对截到了什么）") {
                 capture.saveLastFrameToPhotos()
