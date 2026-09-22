@@ -110,20 +110,45 @@ jobs:
           echo "（上面没有 error: 行就是全通过）"
 
       # 查"某段 ObjC API 导入 Swift 后的确切名字"。typecheck 只会说"没有这个成员"，
-      # 不告诉你正确名字——这一步把整段 API 面导出成 JSON 再筛出来。
-      - name: 导出 Swift API 面（查确切名字用）
+      # 不告诉你正确名字，所以这里把候选拼法逐个试一遍——**哪一行没有 error，
+      # 哪个就是正确名字**。一次探针（约 50 秒）就能得到确定答案。
+      - name: 逐个试候选的 Swift 名字
         continue-on-error: true
         run: |
           SDK="${{ steps.find.outputs.sdk }}"
-          xcrun swift-api-digester -dump-sdk \
-            -module ScreenCaptureKit \
-            -o /tmp/scapi.json \
-            -sdk "$SDK" \
-            -target arm64-apple-ios27.0 2>&1 | tail -5
-          echo "===== 名字里带 picker / present 的声明 ====="
-          grep -oE '"printedName" *: *"[^"]*"' /tmp/scapi.json \
-            | sed 's/.*: *"//; s/"$//' | sort -u \
-            | grep -iE 'picker|present' || echo "（没筛出来）"
+          cat > /tmp/names.swift <<'SWIFT'
+          import ScreenCaptureKit
+
+          @available(iOS 27.0, *)
+          func c1(_ p: SCContentSharingPicker) { p.presentPicker(using: .display) }
+          @available(iOS 27.0, *)
+          func c2(_ p: SCContentSharingPicker) { p.presentPicker(usingContentStyle: .display) }
+          @available(iOS 27.0, *)
+          func c3(_ p: SCContentSharingPicker) { p.presentPickerUsingContentStyle(.display) }
+          @available(iOS 27.0, *)
+          func c4(_ p: SCContentSharingPicker) { p.present(using: .display) }
+          @available(iOS 27.0, *)
+          func c5(_ p: SCContentSharingPicker) { p.presentPicker(usingContentStyle: SCShareableContentStyle.display) }
+          SWIFT
+          echo "候选：c1 presentPicker(using:)　c2 presentPicker(usingContentStyle:)　"
+          echo "      c3 presentPickerUsingContentStyle(_:)　c4 present(using:)　c5 同 c2 显式类型"
+          echo
+          echo "===== 逐个 typecheck（按 c1..c5 分别报错）====="
+          for n in 1 2 3 4 5; do
+            printf "c%s: " "$n"
+            if out=$(xcrun swiftc -typecheck -sdk "$SDK" -target arm64-apple-ios27.0 \
+                     /tmp/names.swift 2>&1); then
+              echo "全通过（说明这一段里没有错的拼法）"
+              break
+            fi
+            # 只留下与这一行相关的诊断，其余的（例如别的候选报错）不误导
+            hit=$(echo "$out" | grep -E "names\.swift:[0-9]+:[0-9]+: error" | sed -n "${n}p")
+            if [ -z "$hit" ]; then echo "✅ 没有报错"; else echo "❌ $hit"; fi
+          done
+          echo
+          echo "===== 完整诊断（供核对）====="
+          xcrun swiftc -typecheck -sdk "$SDK" -target arm64-apple-ios27.0 /tmp/names.swift 2>&1
+          echo "（完）"
 
       - name: 打印 ScreenCaptureKit 的完整可用面
         run: |

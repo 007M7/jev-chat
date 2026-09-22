@@ -46,7 +46,14 @@ jobs:
       - name: 选择 Xcode（优先 27 以上）
         run: |
           set -e
-          VER=$(ls -1 /Applications | grep -E '^Xcode.*\.app$' | sort -V | tail -1)
+          # **优先非 beta**：镜像上同时有 27.0 Release Candidate 和 27.2 beta 时，
+          # 光按版本号取最新会选到 beta——beta 有回归风险，也与前几个已验收的包不一致
+          # （probe17/18/19 都是 27.0 RC 编的）。只有没有非 beta 的 27+ 时才退而用 beta。
+          VER=$(ls -1 /Applications | grep -E '^Xcode.*\.app$' | grep -vi 'beta' | sort -V | tail -1)
+          if [ -z "$VER" ]; then
+            VER=$(ls -1 /Applications | grep -E '^Xcode.*\.app$' | sort -V | tail -1)
+            echo "::warning::只有 beta 版 Xcode 可用，用 $VER"
+          fi
           if [ -z "$VER" ]; then echo "::error::runner 上没有 Xcode"; exit 1; fi
           echo "选中 $VER"
           sudo xcode-select -s "/Applications/$VER/Contents/Developer"
