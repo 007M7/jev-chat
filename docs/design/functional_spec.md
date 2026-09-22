@@ -39,7 +39,7 @@
   "title_normalized": "去空格/全半角统一/去表情后的标题",
   "app": "wechat",
   "is_group": true,
-  "members": ["恸.", "Akihiro", "柳伟杰"],
+  "members": ["Nox.", "Aster", "林伟"],
   "distinct_speakers": 3,
   "created_at": "2026-09-22T00:00:00Z",
   "last_active_at": "..."
@@ -56,7 +56,7 @@
 ```json
 {
   "side": "me | other",
-  "sender": "Akihiro",        // 群聊里必填；一对一为 null
+  "sender": "Aster",        // 群聊里必填；一对一为 null
   "kind": "text | sticker | image | voice | quote | payment | system",
   "text": "我改成 OpenAI 的",
   "quote_text": "被引用的原文（kind=quote 时）",
@@ -84,7 +84,7 @@
     "tone": "简洁、技术向、不用敬语"       // 我在这儿的说话风格
   },
   "counterpart": {                       // 一对一：对方；群聊：留空
-    "display_name": "Akihiro",
+    "display_name": "Aster",
     "relationship": "同事 / 一起做项目的",
     "tone": "直接、爱吐槽",
     "boundaries": ["不要在群里提钱"]       // 忌讳与边界
@@ -92,8 +92,8 @@
   "group": {                             // 群聊专用
     "purpose": "项目交流群，讨论实现与需求",
     "members": [
-      {"name": "Akihiro", "role": "协作者", "tone": "直接、爱吐槽"},
-      {"name": "恸.", "role": "用户/观察者", "tone": "简短"}
+      {"name": "Aster", "role": "协作者", "tone": "直接、爱吐槽"},
+      {"name": "Nox.", "role": "用户/观察者", "tone": "简短"}
     ],
     "norms": ["讨论技术细节可以公开", "拉人靠挂二维码，不手动拉"],
     "audience_size": 214                  // 影响措辞：群里 200 人 vs 3 人完全不同
@@ -180,7 +180,7 @@
   "session_key": "...",
   "profile": "group",              // one_on_one | group
   "calibrated": false,             // 该档案是否已用标注集校准
-  "speaker": {"name": "Akihiro", "source": "perception"},   // 最新消息的发言人
+  "speaker": {"name": "Aster", "source": "perception"},   // 最新消息的发言人
   "context_line": "还是走了 openrouter 的协议",              // 同人上一条，给"上文"用
   "risk": { ...见 2.5... },
   "action_advice": "轻松回应 · 可以互动 · 不用当真",
@@ -212,8 +212,8 @@
 ```json
 {
   "aliases": {
-    "Akihiro": ["Akihiro", "Akihero", "akihiro"],
-    "恸.": ["恸.", "恸", "慵."]
+    "Aster": ["Aster", "Astero", "aster"],
+    "Nox.": ["Nox.", "Nox", "Lull."]
   },
   "rule": "归一化 + 相似度 ≥ 0.6 视为同一人；低于阈值时新建发言人并在界面上标注「疑似新成员」"
 }
@@ -224,8 +224,8 @@
 ### 第二层 · 状态：把发言人送进判断层
 
 ```
-chat.messages[]: {"from": "me|other", "text": "...", "sender": "Akihiro"}
-chat.senders: ["恸.", "Akihiro"]
+chat.messages[]: {"from": "me|other", "text": "...", "sender": "Aster"}
+chat.senders: ["Nox.", "Aster"]
 chat.distinct_speakers: 3
 ```
 
@@ -244,7 +244,7 @@ chat.distinct_speakers: 3
 
 ### 第四层 · 界面：把发言人显示出来
 
-截图里的 `来自 Akihiro · 上文: 还是走了 openrouter 的协议` 就是这一层，必须保留：
+截图里的 `来自 Aster · 上文: 还是走了 openrouter 的协议` 就是这一层，必须保留：
 - **发言人名**：让人一眼知道在回谁
 - **上文**：同一个人此前最近的一条，避免误把别人的话当成他的话
 - 群聊里候选措辞要考虑**受众规模**（214 人的群里说话和一对一完全不同）
@@ -296,7 +296,7 @@ chat.distinct_speakers: 3
 |---|---|---|
 | 1 会话标题 | 绿色高亮标题 + 群人数 | 会话隔离的可见证据；也提醒"这是 214 人的群" |
 | 2 分析状态 | 分析完成 / 读屏中 / 判断中 | 两段式渲染（判断先出、候选后补），不让人干等 |
-| 3 最新消息 + 发言人 + 上文 | `我改成 OpenAI 的` / `来自 Akihiro · 上文: ...` | 发言归属的核心展示 |
+| 3 最新消息 + 发言人 + 上文 | `我改成 OpenAI 的` / `来自 Aster · 上文: ...` | 发言归属的核心展示 |
 | 4 意图 + 置信度 | `闲聊` / `意图识别率 35%` | 低置信度要可见 |
 | 5 风险等级 | `● 留神 4/9` + hint 短语 | 数值 + 中文标签 + 可执行建议，三层缺一不可 |
 | 6 候选回复（按风格分组） | 风格折叠组 → 组内 `#1 · 53%` + 复制/填入 | 风格是用户偏好维度，不与措辞合适度混排 |
