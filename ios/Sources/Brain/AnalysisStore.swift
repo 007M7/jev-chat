@@ -179,6 +179,15 @@ final class AnalysisStore: ObservableObject {
         analyses.filter { $0.sessionKey == sessionKey }.sorted { $0.at > $1.at }
     }
 
+    /// 会话列表里的一行预览（最近一条记录的最新消息）
+    func lastPreview(in sessionKey: String) -> String {
+        guard let a = analyses(in: sessionKey).first else { return "（暂无内容）" }
+        let t = a.latestText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !t.isEmpty { return t }
+        if let sp = a.speaker { return "\(sp)：(无文本消息)" }
+        return "（无文本消息）"
+    }
+
     /// 某会话里出现过的发言人
     func speakers(in sessionKey: String) -> [String] {
         var seen: [String] = []

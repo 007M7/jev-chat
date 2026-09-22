@@ -9,6 +9,14 @@ import SwiftUI
 struct HistoryView: View {
     @ObservedObject private var store = AnalysisStore.shared
 
+    static func shortTime(_ d: Date) -> String {
+        let c = Calendar.current
+        if c.isDateInToday(d) {
+            return d.formatted(date: .omitted, time: .shortened)
+        }
+        if c.isDateInYesterday(d) { return "昨天" }
+        return d.formatted(.dateTime.month().day())
+    }
     var body: some View {
         NavigationStack {
             List {
@@ -22,15 +30,29 @@ struct HistoryView: View {
                     NavigationLink {
                         SessionDetailView(sessionKey: s.key, store: store)
                     } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack(spacing: 6) {
-                                Image(systemName: s.isGroup ? "person.3.fill" : "person.fill")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                Text(s.title).font(.subheadline).bold().lineLimit(1)
+                        HStack(spacing: 11) {
+                            AvatarView(title: s.title, isGroup: s.isGroup)
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(spacing: 6) {
+                                    Text(s.title).font(.subheadline).bold().lineLimit(1)
+                                    Spacer(minLength: 4)
+                                    Text(Self.shortTime(s.lastAt))
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                }
+                                HStack(spacing: 5) {
+                                    Text(store.lastPreview(in: s.key))
+                                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                    Spacer(minLength: 4)
+                                    if store.profiles[s.key]?.notes.isEmpty == false {
+                                        Image(systemName: "checkmark.seal.fill")
+                                            .font(.caption2).foregroundStyle(.green)
+                                    }
+                                    Text("\(s.count)")
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                }
                             }
-                            Text("\(s.count) 条记录 · 最近 \(s.lastAt.formatted(date: .abbreviated, time: .shortened))")
-                                .font(.caption).foregroundStyle(.secondary)
                         }
+                        .padding(.vertical, 2)
                     }
                 }
                 if !store.sessions.isEmpty {
@@ -54,6 +76,48 @@ struct HistoryView: View {
                 }
             }
             .navigationTitle("记录")
+        }
+    }
+}
+
+/// 圆形头像，样式对齐聊天软件的联系人列表：取标题首字 + 由标题派生的固定配色。
+/// 不显示真实头像（截图里那些头像是别人的肖像，没必要留存）。
+struct AvatarView: View {
+    let title: String
+    let isGroup: Bool
+
+    private static let palette: [Color] = [
+        .blue, .green, .orange, .purple, .pink, .teal, .indigo, .brown,
+    ]
+
+    private var color: Color {
+        var h = 5381
+        for u in title.unicodeScalars { h = ((h << 5) &+ h) &+ Int(u.value) }
+        return Self.palette[abs(h) % Self.palette.count]
+    }
+
+    private var initial: String {
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? "?" : String(t.prefix(1))
+    }
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(color.opacity(0.85))
+                .frame(width: 44, height: 44)
+            if isGroup {
+                Text(initial).font(.title3).bold().foregroundStyle(.white)
+                // 群里用角标提示是多人群聊
+                Image(systemName: "person.3.fill")
+                    .font(.system(size: 8))
+                    .foregroundStyle(.white)
+                    .padding(3)
+                    .background(Circle().fill(.black.opacity(0.25)))
+                    .offset(x: 15, y: 15)
+            } else {
+                Text(initial).font(.title3).bold().foregroundStyle(.white)
+            }
         }
     }
 }

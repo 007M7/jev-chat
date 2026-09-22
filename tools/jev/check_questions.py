@@ -209,7 +209,8 @@ def build_canonical() -> dict:
                 "calibrated": True,
                 "selected_when": "感知层判定 is_group=false",
                 "relationship_default": (
-                    "对方是我的伴侣；from=me 的是我发的，from=other 的是对方发的"
+                    "对方是这个会话里的另一个人；from=me 的是我发的，from=other 的是对方发的。"
+                    "请按对方的实际身份与场合判断，不要假设亲密关系；拿不准时宁可保守"
                 ),
                 "judge_questions": one_on_one,
                 "rank_question": python_rank_template(),

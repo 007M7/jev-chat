@@ -25,6 +25,12 @@ struct JevAnalysis {
     var relationshipUsed: String
     /// 语境上的不确定处（标题没读到、群聊身份是推断的……），如实显示
     var contextNotes: [String]
+    /// 感知读到的消息条数。**0 表示这一帧不是可识别的聊天界面**（比如在桌面、别的 App、
+    /// 或者在聊天列表页），调用方应据此跳过——否则会在非聊天界面反复产出无意义结果。
+    var messageCount: Int
+    /// 消息内容签名（对齐安卓 ChatModels.signature 的思路：取最后 6 条）。
+    /// 用来做**内容级去重**：像素会因噪声微变，但"对话没变"就不该重复分析。
+    var messageSignature: String
 }
 
 enum JevError: LocalizedError {
@@ -515,7 +521,15 @@ final class JevPipeline {
             profileName: profileName,
             calibrated: calibrated,
             relationshipUsed: relationship,
-            contextNotes: contextNotes
+            contextNotes: contextNotes,
+            messageCount: recent.count,
+            messageSignature: Self.signature(of: recent)
         )
+    }
+
+    /// 消息内容签名：取最后 6 条（与安卓 ChatModels.signature 同思路）。
+    /// 用于内容级去重——像素会因噪声微变，但对话没变就不该重复分析。
+    static func signature(of msgs: [(side: String, text: String, sender: String?)]) -> String {
+        msgs.suffix(6).map { "\($0.side):\($0.text)" }.joined(separator: "|")
     }
 }

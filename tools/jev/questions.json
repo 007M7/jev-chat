@@ -23,7 +23,7 @@
       "label": "一对一关系（已校准）",
       "calibrated": true,
       "selected_when": "感知层判定 is_group=false",
-      "relationship_default": "对方是我的伴侣；from=me 的是我发的，from=other 的是对方发的",
+      "relationship_default": "对方是这个会话里的另一个人；from=me 的是我发的，from=other 的是对方发的。请按对方的实际身份与场合判断，不要假设亲密关系；拿不准时宁可保守",
       "judge_questions": {
         "literal_question": {
           "type": "noul",
@@ -122,10 +122,10 @@
       "judge_questions": {
         "asked_to_me": {
           "type": "noul",
-          "instructions": "Is the latest message addressed to me, or does it need a reply from me? Answer FALSE if the speaker is talking to someone else, just thinking out loud, sharing something for the group in general, or greeting the room without expecting me specifically. In a group chat most messages are not aimed at any one person.",
+          "instructions": "Is the latest message addressed to me, or does it need a reply from me? The conversation is a group: each message carries a sender, and the senders are different people. Check the sender of the latest message before answering. Answer FALSE if the speaker is talking to another member, replying to someone else's question, thinking out loud, sharing something for the group in general, or greeting the room without expecting me specifically. In a group chat most messages are not aimed at any one person.",
           "criteria": {
             "true": "The message names me, replies to something I said, asks a question only I would answer, or clearly expects my response as the project owner or the person being discussed.",
-            "false": "The message is aimed at another member, is a general remark to the room, is a greeting or a share, or is part of a back-and-forth between other people."
+            "false": "The message is aimed at another named member, is a general remark to the room, is a greeting or a share, or is part of a back-and-forth between other people."
           }
         },
         "asker_intent": {
@@ -158,15 +158,15 @@
         },
         "need_reply": {
           "type": "noul",
-          "instructions": "Does the latest message need a reply from me specifically, reasonably soon? Answer FALSE if it is aimed at someone else, is a share needing no response, is a closing remark, or if another member will naturally handle it. A direct question to me, a request for something only I have, or public criticism of my project is TRUE.",
+          "instructions": "Does the latest message need a reply from me specifically, reasonably soon? Each message carries a sender, and the senders are different people; do not assume the latest speaker is the same person as the earlier one. Answer FALSE if it is aimed at another member, is a reply between two other people, is a share needing no response, is a closing remark, or if another member has already answered or fulfilled it. A direct question to me, a request for something only I have, or public criticism of my project is TRUE.",
           "criteria": {
             "true": "Someone is waiting on me: a direct question, a request only I can fulfil, public criticism of my work that calls for a response, or a closing summary that asks me to confirm.",
-            "false": "No reply is needed from me: the message is aimed at another member, is a share or a reaction, is chatter between other people, or the topic is already closed."
+            "false": "No reply is needed from me: the message is aimed at another named member, is a reply between other people, is a share or a reaction, is something another member already handled, or the topic is already closed."
           }
         },
         "best_group_action": {
           "type": "choice",
-          "instructions": "What type of next action is best for me in this group? Choose only the action type; do not decide the exact wording. When people asked for concrete resources such as links, codes, or collaborators, prefer share_link or promise_and_follow over a vague acknowledgement. When nothing was asked of me or the topic is closed, no_reply is a legitimate answer.",
+          "instructions": "What type of next action is best for me in this group? Choose only the action type; do not decide the exact wording. Check who has already replied: if another member already answered the question or provided the thing that was asked for, then no_reply or acknowledge_brief is right, not answering again. When people asked me for concrete resources such as links, codes, or collaborators, prefer share_link or promise_and_follow over a vague acknowledgement. When nothing was asked of me or the topic is closed, no_reply is a legitimate answer.",
           "criteria": {
             "answer_directly": "Give the fact or the answer in the group. Use when the question is clear and I actually know the answer.",
             "share_link": "Provide the concrete resource that was requested: a link, an invite code, a QR code, a document, or access.",

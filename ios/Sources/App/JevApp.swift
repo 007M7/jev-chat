@@ -55,6 +55,14 @@ final class AppBridge: ObservableObject {
     /// 用来兜住"这一帧读不到标题/判断不出群聊"——否则会话键会变成「未知会话」，
     /// 人工填的关系与人物档案全部失效，还会退回到错误的关系前提。
     private var lastSession: JevPipeline.SessionHint?
+    /// 每个会话上一次分析过的消息签名：**内容级去重**。
+    /// 像素会因噪声（光标、亮度、渲染差）微变，但"对话没变"就不该重复分析——
+    /// 实测静默状态下会每分钟触发好几次，就是只做了像素级比对。
+    private var lastSignature: [String: String] = [:]
+    /// 两次分析之间的最小间隔，兜住像素噪声造成的连续触发
+    private var lastAnalysisAt: Date?
+    @Published private(set) var skippedAsRepeat = 0
+    @Published private(set) var skippedNotChat = 0
 
     func setUp() {
         // 通知的注册已经在 AppDelegate 里做了；这里只补一次以免首帧竞态
@@ -75,6 +83,11 @@ final class AppBridge: ObservableObject {
         // 冷却期：刚弹过通知就别抓，否则会把自己的横幅读成聊天内容
         if let s = suppressUntil, Date() < s {
             status = String(format: "刚弹过通知，等横幅消失（%.0fs）", max(0, s.timeIntervalSinceNow))
+            return
+        }
+        // 最小间隔：像素噪声（光标、亮度、渲染差）会让门在静默时反复放行，这里兜一层
+        let minInterval: TimeInterval = 12
+        if let t = lastAnalysisAt, Date().timeIntervalSince(t) < minInterval {
             return
         }
         isAnalyzing = true
@@ -109,17 +122,38 @@ final class AppBridge: ObservableObject {
                 analysisCount += 1
                 status = String(format: "分析完成 · 感知 %.1fs 总 %.1fs", a.perceptionSeconds, a.totalSeconds)
 
-                // 回声检测：最新消息若就是我们自己刚弹过的候选，说明这一帧把通知横幅读进去了。
-                // 这种结果不能记、也不能再弹通知——否则会自我强化。
-                if JevPipeline.looksLikeOurEcho(a.latestText, recentCandidates: recentCandidates) {
-                    skippedAsEcho += 1
-                    status = "这一帧读到了自己的通知，已丢弃（改提示：等横幅消失）"
+                // ---- 三重过滤：不该记也不该弹的情况 ----
+
+                // 1) 不是聊天界面：感知没读到任何消息（在桌面、别的 App、聊天列表页……）
+                if a.messageCount == 0 {
+                    skippedNotChat += 1
+                    status = "这一帧没读到对话（不是聊天界面？），已跳过"
                     isAnalyzing = false
                     return
                 }
 
+                // 2) 内容没变：与上次分析过的同一会话消息签名相同
+                let skey = store.sessionKey(for: a.chatTitle, isGroup: a.isGroup)
+                if let prev = lastSignature[skey], prev == a.messageSignature {
+                    skippedAsRepeat += 1
+                    status = "对话内容与上次相同，已跳过"
+                    isAnalyzing = false
+                    return
+                }
+
+                // 3) 回声：最新消息就是自己刚弹的候选（notification 横幅被读进来）
+                if JevPipeline.looksLikeOurEcho(a.latestText, recentCandidates: recentCandidates) {
+                    skippedAsEcho += 1
+                    status = "这一帧读到了自己的通知，已丢弃"
+                    isAnalyzing = false
+                    return
+                }
+
+                lastSignature[skey] = a.messageSignature
+                lastAnalysisAt = Date()
+
                 // 记入本地记录（按会话分组，App 内可查）
-                let key = store.sessionKey(for: a.chatTitle, isGroup: a.isGroup)
+                let key = skey
                 let rec = StoredAnalysis(
                     sessionKey: key, chatTitle: a.chatTitle, isGroup: a.isGroup,
                     speaker: a.speaker, latestText: a.latestText, contextLine: a.contextLine,
