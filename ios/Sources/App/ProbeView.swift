@@ -190,7 +190,8 @@ struct ProbeView: View {
                 // Gate 1 的验收记录（已通过，留档）
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Gate 1 结论（已通过）").font(.caption).bold()
-                    Text("① 授权：每次都重新弹 —— 使用上开一次就一直跑")
+                    Text("① 授权：首次要确认；之后**同一运行内开始/停止不再重弹**"
+                         + "（重开 App 会再确认一次——iOS 没有保存屏幕授权的接口）")
                         .font(.caption2).foregroundStyle(.secondary)
                     Text("② 录屏指示条：有（灵动岛位置）")
                         .font(.caption2).foregroundStyle(.secondary)
@@ -202,6 +203,10 @@ struct ProbeView: View {
 
                 Button("把最近一帧存到相册") { capture.saveLastFrameToPhotos() }
                     .disabled(capture.lastFrame == nil)
+                Text("这是**唯一**会把截图写到本机的操作，而且写进系统相册、由你自己决定删。"
+                     + "App 自身不留任何截图：分析走过的画面只在内存里保留最近一帧，"
+                     + "用完即弃；落盘的只有文字（聊天记录 + 分析记录）。")
+                    .font(.caption2).foregroundStyle(.secondary)
                 Button("清空采集记录（重测用）", role: .destructive) { capture.resetLog() }
             }
         }
