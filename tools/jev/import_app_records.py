@@ -4,9 +4,14 @@
 这条链断在手机上过很久——记录出不来，校准与蒸馏都做不了，所以先把 PC 侧打通。
 
 App 侧的文件（都在 App 沙盒的 Documents 里，通过文件共享可见）：
-  jev_history.json   分析记录（每条含对话原文 transcript、七题原始答案 answersSummary）
-  jev_profiles.json  会话档案（这个群是什么 / 各人在本群的角色）
-  jev_persons.json   人物档案（跨会话通用的身份）
+  jev_history.json       分析记录（每条含对话原文 transcript、七题原始答案 answersSummary）
+  jev_conversations.json 会话记录（跨帧累积的对话流，逐条带 side/sender）
+  jev_profiles.json      会话档案（这个群是什么 / 各人在本群的角色）
+  jev_persons.json       人物档案（跨会话通用的身份）
+
+**两个记录层是分开的，别混**（用户实测反馈）：`jev_history.json` 是一次判断一份，
+`jev_conversations.json` 是一个会话一条不断变长的对话流。校准标注要看的是"当时的上下文"，
+所以优先用累积的会话记录；单帧 transcript 只在会话记录缺失时兜底。
 
 用法:
   python import_app_records.py --export <目录> --review out/app_review.md
@@ -50,7 +55,7 @@ ONE_ON_ONE_FIELDS = [
 ]
 
 
-def load_export(directory: Path) -> tuple[list[dict], dict, dict]:
+def load_export(directory: Path) -> tuple[list[dict], dict, dict, dict]:
     def read(name: str, default):
         p = directory / name
         if not p.exists():
@@ -64,9 +69,13 @@ def load_export(directory: Path) -> tuple[list[dict], dict, dict]:
     history = read("jev_history.json", [])
     profiles = read("jev_profiles.json", {})
     persons = read("jev_persons.json", {})
+    conversations = read("jev_conversations.json", {})
     if not isinstance(history, list):
         raise SystemExit("jev_history.json 应是数组")
-    return history, profiles if isinstance(profiles, dict) else {}, persons if isinstance(persons, dict) else {}
+    return (history,
+            profiles if isinstance(profiles, dict) else {},
+            persons if isinstance(persons, dict) else {},
+            conversations if isinstance(conversations, dict) else {})
 
 
 def parse_time(s: str) -> datetime | None:
@@ -90,6 +99,36 @@ def group_by_session(history: list[dict]) -> dict[str, list[dict]]:
     for v in out.values():
         v.sort(key=lambda r: r.get("at") or "", reverse=True)
     return dict(out)
+
+
+def fmt_line(line: dict) -> str:
+    """一条累积记录 → 「发言人：内容」（与 app 里 transcript 的写法一致）。"""
+    who = "我" if line.get("side") == "me" else (line.get("sender") or "对方")
+    return f"{who}：{line.get('text', '')}"
+
+
+def context_window(conversations: dict, session_key: str, rec: dict, n: int = 8) -> list[str]:
+    """取这条分析发生时的上下文。
+
+    **优先用累积的会话记录**：单帧 transcript 可能只读到两三条气泡，
+    而累积记录里有更早的消息。标注"这句是不是在跟我说"必须看到前后在聊什么，
+    所以会话记录是更好的依据；只有它缺失时才退回单帧 transcript。
+    定位方式：在会话记录里从尾部往前找到这条分析的最新消息，往前取 n 条。
+    """
+    lines = conversations.get(session_key) or []
+    if not lines:
+        return [str(x) for x in (rec.get("transcript") or [])][-n:]
+    want = (rec.get("latestText") or "").strip()
+    idx = None
+    if want:
+        for i in range(len(lines) - 1, -1, -1):
+            if (lines[i].get("text") or "").strip() == want:
+                idx = i
+                break
+    if idx is None:
+        idx = len(lines) - 1          # 找不到就退到"这条记录产生时最新的一条"
+    start = max(0, idx - n + 1)
+    return [fmt_line(x) for x in lines[start:idx + 1]]
 
 
 def render_review(history: list[dict], profiles: dict, persons: dict) -> str:
@@ -155,7 +194,7 @@ def render_review(history: list[dict], profiles: dict, persons: dict) -> str:
     return "\n".join(L)
 
 
-def render_label_table(history: list[dict]) -> str:
+def render_label_table(history: list[dict], conversations: dict | None = None) -> str:
     """生成群聊题目集的标注核对表：模型值已有，用户只填错的。"""
     L: list[str] = []
     L.append("# 群聊判断核对表（从 App 记录生成）")
@@ -186,7 +225,7 @@ def render_label_table(history: list[dict]) -> str:
             L.append(f"## {n}. {r.get('chatTitle','')}　`{short_time(r.get('at',''))}`")
             L.append("")
             L.append("```")
-            for line in (r.get("transcript") or [])[-8:]:
+            for line in context_window(conversations or {}, key, r, n=8):
                 L.append(line)
             L.append("```")
             L.append("")
@@ -224,24 +263,39 @@ def _split_line(line: str) -> dict:
     return {"side": "other", "text": line.strip(), "sender": None}
 
 
-def render_distill_input(history: list[dict]) -> dict:
-    """整理成记忆蒸馏的输入：按会话聚合对话原文（结构化，便于 memory.py 直接用）。"""
+def render_distill_input(history: list[dict], conversations: dict | None = None) -> dict:
+    """整理成记忆蒸馏的输入：按会话聚合对话原文（结构化，便于 memory.py 直接用）。
+
+    优先用累积的会话记录（更长、且已按内容去重），单帧 transcript 只作兜底。
+    """
+    conversations = conversations or {}
     out: dict = {"sessions": []}
     for key, recs in group_by_session(history).items():
         seen: list[tuple] = []
-        for r in recs:
-            for line in r.get("transcript") or []:
-                m = _split_line(line)
+        conv = conversations.get(key) or []
+        if conv:
+            for line in conv:
+                m = {"side": line.get("side") or "other",
+                     "sender": line.get("sender"),
+                     "text": line.get("text") or ""}
                 sig = (m["side"], m["sender"], m["text"])
-                if sig not in seen:
+                if m["text"] and sig not in seen:
                     seen.append(sig)
+        else:
+            for r in recs:
+                for line in r.get("transcript") or []:
+                    m = _split_line(line)
+                    sig = (m["side"], m["sender"], m["text"])
+                    if sig not in seen:
+                        seen.append(sig)
         if not seen:
             continue
         out["sessions"].append({
             "session_key": key,
             "title": recs[0].get("chatTitle"),
             "is_group": recs[0].get("isGroup"),
-            "messages": [{"side": s, "sender": sn, "text": t} for s, sn, t in seen[-40:]],
+            "source": "conversations" if conv else "transcript",
+            "messages": [{"side": s, "sender": sn, "text": t} for s, sn, t in seen[-60:]],
             "note": "交给 memory.py --from-export 用；messages 已结构化（side/sender/text）",
         })
     return out
@@ -260,7 +314,7 @@ def main() -> int:
     if not d.is_dir():
         print(f"目录不存在：{d}")
         return 2
-    history, profiles, persons = load_export(d)
+    history, profiles, persons, conversations = load_export(d)
     if not history:
         print(f"{d} 里没有读到记录（需要 jev_history.json）")
         print("从 App 里导出：文件 App → 我的 iPhone → Jev 助手 → 拷出 jev_*.json")
@@ -280,6 +334,14 @@ def main() -> int:
     with_tr = sum(1 for r in history if r.get("transcript"))
     print()
     print(f"含原始答案 {with_ans}/{len(history)}　含对话原文 {with_tr}/{len(history)}")
+    conv_sessions = sum(1 for v in conversations.values() if v)
+    conv_lines = sum(len(v) for v in conversations.values())
+    if conv_sessions:
+        print(f"会话记录（跨帧累积）{conv_sessions} 个会话 / {conv_lines} 条")
+        print("  标注与蒸馏优先用这份——单帧 transcript 可能只读到两三条气泡")
+    else:
+        print("没有 jev_conversations.json：标注与蒸馏退回单帧 transcript")
+        print("  （这个文件需要较新的 App 版本；旧版本的记录里只有 transcript）")
     if with_ans < len(history):
         print("  （缺原始答案的多是更早版本产生的记录；校准需要它，重新跑一批即可）")
 
@@ -290,14 +352,14 @@ def main() -> int:
 
     if args.label_table:
         out = Path(args.label_table); out.parent.mkdir(parents=True, exist_ok=True)
-        md = render_label_table(history)
+        md = render_label_table(history, conversations)
         out.write_text(md, encoding="utf-8")
         usable = md.count("| 你的答案（错才填） |")
         print(f"\n标注表已写 {out}（可核对的记录 {usable} 条）")
 
     if args.distill_json:
         out = Path(args.distill_json); out.parent.mkdir(parents=True, exist_ok=True)
-        payload = render_distill_input(history)
+        payload = render_distill_input(history, conversations)
         out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"\n蒸馏输入已写 {out}（会话 {len(payload['sessions'])} 个）")
     return 0

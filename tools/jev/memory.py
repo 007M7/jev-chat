@@ -384,6 +384,12 @@ def main() -> int:
             print(f"  - {title}: 新增 {meta['added']}  更新 {meta['updated']}  "
                   f"丢弃(无出处) {meta['dropped']}  耗时 {meta['elapsed_s']}s")
 
+        if args.dry_run:
+            # dry-run 是"核对流程"的终点，不是"没给参数"。跑到这里如果还落到下面的
+            # print_help()，就会在成功输出后面再打一遍 usage —— 看起来像报错。
+            print("\n（dry-run 结束，未调用模型、未写档案；去掉 --dry-run 才会真正蒸馏）")
+            return 0
+
     if args.distill:
         src = Path(args.distill)
         data = json.loads(src.read_text(encoding="utf-8"))
