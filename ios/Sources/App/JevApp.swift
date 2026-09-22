@@ -67,12 +67,15 @@ final class AppBridge: ObservableObject {
 
     /// 自动分析开关。关掉后只有手动点"立刻分析一次"才会跑。
     /// 用户要求：不要无条件隔十几秒就读一次——由他决定这个功能开不开。
-    @Published var autoAnalyze: Bool {
+    // 注意：非可选类型 + didSet 观察器**必须给初始值**，否则 Swift 报
+    // "class 'AppBridge' has no initializers"（云构建实测踩到）。
+    // 可选类型（如 followSessionKey）自动默认 nil，不受影响。
+    @Published var autoAnalyze: Bool = true {
         didSet { UserDefaults.standard.set(autoAnalyze, forKey: Self.kAuto) }
     }
 
     /// 快速模式：只出判断，不生成候选。实测能省掉约一半耗时（起草+排序占总耗时约一半）。
-    @Published var fastMode: Bool {
+    @Published var fastMode: Bool = false {
         didSet { UserDefaults.standard.set(fastMode, forKey: Self.kFast) }
     }
 
