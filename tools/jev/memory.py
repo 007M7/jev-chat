@@ -317,6 +317,10 @@ def main() -> int:
     ap.add_argument("--list", action="store_true", help="列出所有档案")
     ap.add_argument("--show", help="显示某个档案（按会话名匹配）")
     ap.add_argument("--distill", help="从 pipeline 的 JSON 结果蒸馏记忆")
+    ap.add_argument("--from-export",
+                    help="从 import_app_records.py 的 --distill-json 输出批量蒸馏（每会话一份档案）")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="只列出将要处理的会话与现有档案，不调用模型（用于核对流程而非花额度）")
     ap.add_argument("--provider", help="覆盖 roles.analysis 的 provider")
     args = ap.parse_args()
 
@@ -349,6 +353,36 @@ def main() -> int:
             print(f"      key={i.key}  出处={i.source_sender or '-'}  {i.last_seen}  conf={i.confidence}")
             print(f"      原文: {i.evidence[:80]}")
         return 0
+
+    if args.from_export:
+        data = json.loads(Path(args.from_export).read_text(encoding="utf-8"))
+        sessions = data.get("sessions") or []
+        if not sessions:
+            print("输入里没有 sessions")
+            return 2
+        print(f"待处理会话 {len(sessions)} 个" + ("（dry-run，不调用模型）" if args.dry_run else ""))
+        for s in sessions:
+            title = s.get("title") or "未知会话"
+            msgs = s.get("messages") or []
+            if not msgs:
+                print(f"  - {title}: 没有消息，跳过")
+                continue
+            path = d / f"{slug(title)}.json"
+            prof = load(path)
+            if args.dry_run:
+                preview = msgs[-2:]
+                body = "；".join(f"{m.get('sender') or ('我' if m.get('side') == 'me' else '对方')}：{m.get('text')}"
+                                for m in preview)
+                print(f"  - {title}（群聊={s.get('is_group')}）{len(msgs)} 条消息"
+                      f"  现有记忆 {len(prof.items)} 条  档案 {path.name}")
+                print(f"      末尾两条：{body[:80]}")
+                continue
+            prof, meta = distill(title, msgs, prof, args.provider)
+            if s.get("is_group") is not None:
+                prof.is_group = bool(s.get("is_group"))
+            save(prof, path)
+            print(f"  - {title}: 新增 {meta['added']}  更新 {meta['updated']}  "
+                  f"丢弃(无出处) {meta['dropped']}  耗时 {meta['elapsed_s']}s")
 
     if args.distill:
         src = Path(args.distill)

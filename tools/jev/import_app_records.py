@@ -209,23 +209,40 @@ def render_label_table(history: list[dict]) -> str:
     return "\n".join(L)
 
 
+def _split_line(line: str) -> dict:
+    """把「我：…」/「昵称：…」拆成结构化消息（memory.distill 直接吃这种）。"""
+    for sep in ("：", ":"):
+        if sep in line:
+            who, _, body = line.partition(sep)
+            who = who.strip()
+            body = body.strip()
+            if who == "我":
+                return {"side": "me", "text": body, "sender": None}
+            if who in ("对方", ""):
+                return {"side": "other", "text": body, "sender": None}
+            return {"side": "other", "text": body, "sender": who}
+    return {"side": "other", "text": line.strip(), "sender": None}
+
+
 def render_distill_input(history: list[dict]) -> dict:
-    """整理成记忆蒸馏的输入：按会话聚合对话原文。"""
+    """整理成记忆蒸馏的输入：按会话聚合对话原文（结构化，便于 memory.py 直接用）。"""
     out: dict = {"sessions": []}
     for key, recs in group_by_session(history).items():
-        seen: list[str] = []
+        seen: list[tuple] = []
         for r in recs:
             for line in r.get("transcript") or []:
-                if line not in seen:
-                    seen.append(line)
+                m = _split_line(line)
+                sig = (m["side"], m["sender"], m["text"])
+                if sig not in seen:
+                    seen.append(sig)
         if not seen:
             continue
         out["sessions"].append({
             "session_key": key,
             "title": recs[0].get("chatTitle"),
             "is_group": recs[0].get("isGroup"),
-            "messages": seen[-40:],           # 只取一段，避免过长
-            "note": "交给 memory.py 的 distill 用；messages 是「我：…」/「昵称：…」形式的原文",
+            "messages": [{"side": s, "sender": sn, "text": t} for s, sn, t in seen[-40:]],
+            "note": "交给 memory.py --from-export 用；messages 已结构化（side/sender/text）",
         })
     return out
 
