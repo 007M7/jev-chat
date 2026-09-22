@@ -53,12 +53,15 @@ final class ScreenCaptureEngine: NSObject {
     ///   `picker.defaultConfiguration = ...; activatePicker(); picker.present()`
     /// 我第一版漏了它，症状与用户反馈完全一致。
     ///
-    /// `presentPicker(usingContentStyle:)` 想省掉"选窗口还是屏幕"那一步：
-    /// 直接进到"选屏幕"。**但这个 Swift 名字是错的**——真 SDK 的 swiftc -typecheck
-    /// 报 `value of type 'SCContentSharingPicker' has no member 'presentPicker'`
-    /// （见 .github/workflows/sdk-probe.yml 的类型检查步骤）。
-    /// ObjC 的 `presentPickerUsingContentStyle:` 导入 Swift 后叫什么名字，
-    /// 只能查 API 面，不能推。先用已真机验证过的 `present()`。
+    /// `present(using: .display)` 比 `present()` 少一步：直接进到"选屏幕"，
+    /// 不再让用户先选"要共享窗口还是屏幕"。iPhone 上能共享的本来就只有整屏，
+    /// 这一步是纯多余。
+    ///
+    /// 这个名字是**试出来的**，不是推出来的：ObjC 的 `presentPickerUsingContentStyle:`
+    /// 导入 Swift 后并不叫 `presentPicker(usingContentStyle:)`（我第一版就是这么写的，
+    /// 真 SDK 的 swiftc -typecheck 报 "has no member 'presentPicker'"）。
+    /// 编译器给的改名提示是 `'presentPickerUsingContentStyle' has been renamed to 'present(using:)'`。
+    /// 这类名字只能查，见 .github/workflows/sdk-probe.yml 的候选拼法 typecheck 步骤。
     func requestPermission() {
         let picker = SCContentSharingPicker.shared
         picker.add(self)                 // 注册观察者，这样才能收到用户选定的 filter
@@ -78,7 +81,7 @@ final class ScreenCaptureEngine: NSObject {
 
         picker.isActive = true           // ← 关键，漏了它 present() 无效
         onStatus?("等待你在系统选择器里确认共享屏幕…")
-        picker.present()
+        picker.present(using: .display)
     }
 
     /// 首次：拿到 filter 后建流并开播。
