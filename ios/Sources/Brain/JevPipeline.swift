@@ -283,28 +283,6 @@ final class JevPipeline {
         let titleUnknown = cleaned.isEmpty || cleaned == "未知会话"
         let chatTitle = titleUnknown ? (sessionHint?.title ?? "未知会话") : cleaned
 
-        // **is_group 的兜底必须落到中性档案**：
-        // 感知层没给出时（画面信息不足）如果落到 one_on_one，而它的默认关系描述是
-        // 「对方是我的伴侣」——实测就在技术群里生成了恋人语气的话术。
-        // "该亲密时没亲密"是轻错，"在工作群里凭空造出恋情"是重错，所以默认群聊档案。
-        let explicitGroup = structured["is_group"] as? Bool
-
-        // **交叉校验**：对方阵营出现两个以上不同发言人时，它不可能是单聊。
-        // 实测踩过——256 人的群被判成 is_group=false，于是用了单聊档案、生成了恋人话术。
-        // 这个判据完全来自数据本身，比模型的 is_group 字段更可靠。
-        var distinctOtherSenders: [String] = []
-        for m in recent where m.side == "other" {
-            if let s = m.sender, !distinctOtherSenders.contains(s) { distinctOtherSenders.append(s) }
-        }
-        let groupBySenders = distinctOtherSenders.count >= 2
-
-        let isGroup: Bool
-        if groupBySenders {
-            isGroup = true
-        } else {
-            isGroup = explicitGroup ?? sessionHint?.isGroup ?? true
-        }
-        let groupInferred = (explicitGroup == nil) || (explicitGroup == false && groupBySenders)
         let rawMsgs = (structured["messages"] as? [[String: Any]]) ?? []
 
         // 映射成统一形态：side / text / sender。非文本转方括号描述
@@ -330,6 +308,29 @@ final class JevPipeline {
             msgs.append((side, body, (sender?.isEmpty ?? true) ? nil : sender))
         }
         let recent = Array(msgs.suffix(10))
+
+        // **is_group 的兜底必须落到中性档案**：
+        // 感知层没给出时（画面信息不足）如果落到 one_on_one，而它的默认关系描述是
+        // 「对方是我的伴侣」——实测就在技术群里生成了恋人语气的话术。
+        // "该亲密时没亲密"是轻错，"在工作群里凭空造出恋情"是重错，所以默认群聊档案。
+        let explicitGroup = structured["is_group"] as? Bool
+
+        // **交叉校验**：对方阵营出现两个以上不同发言人时，它不可能是单聊。
+        // 实测踩过——256 人的群被判成 is_group=false，于是用了单聊档案、生成了恋人话术。
+        // 这个判据完全来自数据本身，比模型的 is_group 字段更可靠。
+        var distinctOtherSenders: [String] = []
+        for m in recent where m.side == "other" {
+            if let s = m.sender, !distinctOtherSenders.contains(s) { distinctOtherSenders.append(s) }
+        }
+        let groupBySenders = distinctOtherSenders.count >= 2
+
+        let isGroup: Bool
+        if groupBySenders {
+            isGroup = true
+        } else {
+            isGroup = explicitGroup ?? sessionHint?.isGroup ?? true
+        }
+        let groupInferred = (explicitGroup == nil) || (explicitGroup == false && groupBySenders)
 
         // ---- 2) 选题目档案 ----
         guard let qfile = BrainConfig.questionsFile,
