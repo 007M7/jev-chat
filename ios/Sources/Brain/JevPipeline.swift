@@ -172,6 +172,47 @@ final class JevPipeline {
         }
     }
 
+    /// 净化会话标题。
+    ///
+    /// 实测踩过：本 App 的通知横幅浮在微信上方时会被下一帧截图一起截进去，
+    /// 标题于是被反复叠加——出现 `Jev · Jev · Jev · jev-chat-JARVIS 1 群`。
+    /// 这会污染会话键（记录被拆成多个会话），所以只剥掉**开头连续的**通知前缀。
+    /// 刻意只匹配开头的 `Jev ·` 形式：群里可能真叫 "jev-chat-JARVIS"，不能全局替换。
+    static func sanitizeTitle(_ raw: String) -> String {
+        var t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefixes = ["Jev · ", "Jev· ", "Jev ·", "Jev·", "Jev "]
+        var changed = true
+        while changed {
+            changed = false
+            for p in prefixes where t.hasPrefix(p) {
+                t = String(t.dropFirst(p.count)).trimmingCharacters(in: .whitespaces)
+                changed = true
+            }
+        }
+        return t.isEmpty ? "未知会话" : t
+    }
+
+    /// 这条"最新消息"看起来是不是我们自己的输出（回声）。
+    ///
+    /// 通知横幅被截进画面时，模型可能把候选回复当成对方的新消息。
+    /// 判定很严（归一化后完全相等或高度相似），避免误杀真实消息。
+    static func looksLikeOurEcho(_ text: String, recentCandidates: [String]) -> Bool {
+        func norm(_ s: String) -> String {
+            s.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters).contains($0) }
+                .map(String.init).joined()
+        }
+        let n = norm(text)
+        guard n.count >= 6 else { return false }        // 太短不比，避免误杀
+        for c in recentCandidates {
+            let m = norm(c)
+            if m.isEmpty { continue }
+            if n == m { return true }
+            // 相似度过高也算（模型可能把 #1 前缀或个别字读错）
+            if m.count >= 6, AnalysisStore.similarity(n, m) >= 0.9 { return true }
+        }
+        return false
+    }
+
     // MARK: 主流程
 
     /// 会话档案的取用时机很关键：**必须在感知拿到标题之后**。
@@ -217,7 +258,7 @@ final class JevPipeline {
         let structured = try parseJSONObject(pContent)
         let perceptionSeconds = Date().timeIntervalSince(t0)
 
-        let chatTitle = (structured["title"] as? String) ?? "未知会话"
+        let chatTitle = Self.sanitizeTitle((structured["title"] as? String) ?? "未知会话")
         let isGroup = (structured["is_group"] as? Bool) ?? false
         let rawMsgs = (structured["messages"] as? [[String: Any]]) ?? []
 

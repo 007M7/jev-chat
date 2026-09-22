@@ -50,6 +50,10 @@ struct ProbeView: View {
         Section("分析") {
             LabeledContent("流水线", value: bridge.status)
             LabeledContent("已完成分析", value: "\(bridge.analysisCount) 次")
+            LabeledContent("丢弃的自污染帧", value: "\(bridge.skippedAsEcho) 次")
+            Text("「丢弃的自污染帧」= 那一帧把本 App 自己的通知横幅读成了聊天内容，"
+                 + "结果被丢弃（否则会自我强化）。弹通知后有 10 秒不再抓帧来避免它。")
+                .font(.footnote).foregroundStyle(.secondary)
             if bridge.isAnalyzing {
                 HStack(spacing: 8) {
                     ProgressView()

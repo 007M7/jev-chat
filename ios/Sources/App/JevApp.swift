@@ -42,6 +42,15 @@ final class AppBridge: ObservableObject {
     @Published private(set) var isAnalyzing = false
     @Published private(set) var lastError: String?
     @Published private(set) var analysisCount = 0
+    @Published private(set) var skippedAsEcho = 0
+
+    /// 刚弹过通知的冷却期。
+    /// **通知横幅会浮在微信上方**，若这段时间又抓一帧，我们自己的横幅会被当成聊天内容读进去
+    /// （实测踩过：标题被读成「Jev · Jev · Jev · 群名」，候选回复被当成"对方最新消息"）。
+    /// 横幅大约 5 秒自动消失，这里留 10 秒余量。
+    private var suppressUntil: Date?
+    /// 最近弹过的候选，用于回声检测
+    private var recentCandidates: [String] = []
 
     func setUp() {
         // 通知的注册已经在 AppDelegate 里做了；这里只补一次以免首帧竞态
@@ -57,6 +66,11 @@ final class AppBridge: ObservableObject {
         guard !isAnalyzing else { return }          // 上一次还没跑完就跳过，避免堆积
         guard !BrainConfig.allKeyNames().isEmpty else {
             status = "还没配密钥，去设置里填"
+            return
+        }
+        // 冷却期：刚弹过通知就别抓，否则会把自己的横幅读成聊天内容
+        if let s = suppressUntil, Date() < s {
+            status = String(format: "刚弹过通知，等横幅消失（%.0fs）", max(0, s.timeIntervalSinceNow))
             return
         }
         isAnalyzing = true
@@ -89,6 +103,15 @@ final class AppBridge: ObservableObject {
                 analysisCount += 1
                 status = String(format: "分析完成 · 感知 %.1fs 总 %.1fs", a.perceptionSeconds, a.totalSeconds)
 
+                // 回声检测：最新消息若就是我们自己刚弹过的候选，说明这一帧把通知横幅读进去了。
+                // 这种结果不能记、也不能再弹通知——否则会自我强化。
+                if JevPipeline.looksLikeOurEcho(a.latestText, recentCandidates: recentCandidates) {
+                    skippedAsEcho += 1
+                    status = "这一帧读到了自己的通知，已丢弃（改提示：等横幅消失）"
+                    isAnalyzing = false
+                    return
+                }
+
                 // 记入本地记录（按会话分组，App 内可查）
                 let key = store.sessionKey(for: a.chatTitle, isGroup: a.isGroup)
                 let rec = StoredAnalysis(
@@ -109,6 +132,9 @@ final class AppBridge: ObservableObject {
                     chatTitle: a.chatTitle,
                     analysisID: rec.id
                 )
+                // 记住了这次弹了什么：接下来的 10 秒不抓帧，同时用于回声检测
+                recentCandidates = a.candidates
+                suppressUntil = Date().addingTimeInterval(10)
                 liveActivity.start(chatTitle: a.chatTitle)
                 liveActivity.update(danger: a.danger,
                                     headline: "\(a.intentLabel) · \(a.actionAdvice)",
