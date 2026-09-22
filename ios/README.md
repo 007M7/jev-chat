@@ -146,6 +146,17 @@ python import_app_records.py --export <导出目录> --stats                    
 
 这说明**抽帧与变化检测在 iOS 上是必需品而不是优化项**——没有 API 帮你限速。
 
+## 别人怎么用（分发）
+
+**现在没法直接把 IPA 发给别人装**——iOS 要求每个 App 用开发者证书签名，而证书只对签名者
+自己的设备有效。可行的路径与各自的代价见 [docs/ios/distribution.md](../docs/ios/distribution.md)：
+
+- **零成本**：每个用户自己 fork → 用自己的 Actions 构建 → 用自己的 Apple ID 自签（7 天有效期）
+- **想让普通人也能装**：买 $99/年开发者账号走 TestFlight（无需电脑、无需信任、90 天一个构建）
+- **上架**：技术可行，但审核对"聊天辅助"这类工具有不确定性，需先解决定位表述
+
+无论哪条路，用户都要**自备 Jev 与 DeepSeek 的 API 密钥**，并在 App 里填（只存本机 Keychain）。
+
 ## 与桌面版/安卓版的关系
 
 - **共享**：题目档案（`tools/jev/questions.json`）、provider 配置（`providers.json`）、
