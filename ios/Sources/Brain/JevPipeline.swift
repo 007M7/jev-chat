@@ -35,6 +35,9 @@ struct JevAnalysis {
     /// 导出到 PC 后用于：校准群聊题目集、蒸馏人物/会话记忆。
     /// 只存文本，不含截图。
     var transcript: [String]
+    /// 七道题的**原始答案**（题名 → 简洁值，如 asked_to_me="0.11" / asker_intent="ask_resource"）。
+    /// 只带中文标签的话没法按题目集做校准——校准需要逐题的机器值。
+    var answersSummary: [String: String]
 }
 
 enum JevError: LocalizedError {
@@ -562,6 +565,12 @@ final class JevPipeline {
             transcript: recent.map { m in
                 let who = m.side == "me" ? "我" : (m.sender ?? "对方")
                 return "\(who)：\(m.text)"
+            },
+            answersSummary: questions.keys.reduce(into: [String: String]()) { acc, k in
+                guard let a = answers[k] as? [String: Any] else { return }
+                if let v = a["noul"] as? Double { acc[k] = String(format: "%.2f", v) }
+                else if let c = a["choice"] as? String { acc[k] = c }
+                else if let s = a["score"] as? Double { acc[k] = String(format: "%.2f", s) }
             }
         )
     }

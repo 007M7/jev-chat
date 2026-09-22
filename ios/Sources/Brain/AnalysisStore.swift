@@ -32,6 +32,9 @@ struct StoredAnalysis: Codable, Identifiable {
     /// 这次分析用到的对话原文（最近 10 条，带发言人标签）。
     /// 导出到 PC 后用于校准群聊题目集与蒸馏人物记忆——只存文本，不含截图。
     var transcript: [String] = []
+    /// 七道题的原始答案（题名 → 简洁值）。导出后用于按题目集校准，
+    /// 比如核对"asked_to_me 判否但其实是在问我"这类错误。
+    var answersSummary: [String: String] = [:]
 }
 
 /// 会话档案：**人工填的身份信息**，注入判断层。

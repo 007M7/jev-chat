@@ -88,6 +88,28 @@ ios/
     JevWidgetBundle.swift      # 灵动岛与锁屏的渲染
 ```
 
+## 数据闭环：记录导出到 PC
+
+App 的 Info.plist 已打开文件共享（`UIFileSharingEnabled` + `LSSupportsOpeningDocumentsInPlace`），
+所以记录能从手机拷出来，在 PC 上做三件事：
+
+**导出**：手机「文件」App → 我的 iPhone → Jev 助手 → 拷出 `jev_*.json`
+（`jev_history.json` 分析记录 / `jev_profiles.json` 会话档案 / `jev_persons.json` 人物档案）
+
+**PC 侧处理**：
+
+```bash
+cd tools/jev
+python import_app_records.py --export <导出目录> --review out/app_review.md      # 可读复盘
+python import_app_records.py --export <导出目录> --label-table out/group_labels.md  # 群聊校准核对表
+python import_app_records.py --export <导出目录> --distill-json out/for_distill.json # 记忆蒸馏输入
+python import_app_records.py --export <导出目录> --stats                          # 只看统计
+```
+
+**为什么需要这条链**：群聊题目集标着 `calibrated: false`，修它只能靠真实标注数据；
+而记忆蒸馏需要对话原文作为出处（记忆必须带 evidence）。两者都要把记录拿出手机。
+记录里**只存文本不存截图**，与"截图不落盘"的既有约束一致。
+
 ## 还没接的部分（下一轮）
 
 这一版**只验证采集与显示**，没有把感知和判断接进来。下一轮要做：
