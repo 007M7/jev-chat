@@ -61,3 +61,6 @@ ios/*.ipa
 
 # 本地下载的构建产物
 /dist/
+
+# Sideloadly 安装在本目录内（工具，不进仓库）
+/Sideloadly/
