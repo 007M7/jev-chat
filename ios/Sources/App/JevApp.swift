@@ -51,6 +51,10 @@ final class AppBridge: ObservableObject {
     private var suppressUntil: Date?
     /// 最近弹过的候选，用于回声检测
     private var recentCandidates: [String] = []
+    /// 上一个成功识别的会话（标题 + 是否群聊）。
+    /// 用来兜住"这一帧读不到标题/判断不出群聊"——否则会话键会变成「未知会话」，
+    /// 人工填的关系与人物档案全部失效，还会退回到错误的关系前提。
+    private var lastSession: JevPipeline.SessionHint?
 
     func setUp() {
         // 通知的注册已经在 AppDelegate 里做了；这里只补一次以免首帧竞态
@@ -81,7 +85,7 @@ final class AppBridge: ObservableObject {
             do {
                 // 会话档案在**感知拿到标题之后**才取（见 pipeline 里的说明）：
                 // 用上一次的标题猜档案会把上一个会话的身份注入进来，那比不注入更糟。
-                let a = try await pipeline.analyze(image: image) { [weak self] title, isGroup in
+                let a = try await pipeline.analyze(image: image, sessionHint: lastSession) { [weak self] title, isGroup in
                     guard let self else { return ("", nil) }
                     let key = self.store.sessionKey(for: title, isGroup: isGroup)
                     guard let p = self.store.profiles[key] else { return ("", nil) }
@@ -119,9 +123,16 @@ final class AppBridge: ObservableObject {
                     speaker: a.speaker, latestText: a.latestText, contextLine: a.contextLine,
                     danger: a.danger, dangerLabel: a.dangerLabel,
                     intentLabel: a.intentLabel, intentConfidence: a.intentConfidence,
-                    actionAdvice: a.actionAdvice, candidates: a.candidates, pickedIndex: nil
+                    actionAdvice: a.actionAdvice, candidates: a.candidates, pickedIndex: nil,
+                    relationshipUsed: a.relationshipUsed, contextNotes: a.contextNotes,
+                    profileName: a.profileName, calibrated: a.calibrated
                 )
                 store.add(rec)
+
+                // 记住这次的会话身份，供下一帧兜底（标题被通知横幅盖住时特别有用）
+                if a.chatTitle != "未知会话" {
+                    lastSession = JevPipeline.SessionHint(title: a.chatTitle, isGroup: a.isGroup)
+                }
 
                 // 结果走通知（3 个候选按钮）
                 let dangerText = String(format: "%.0f", a.danger)

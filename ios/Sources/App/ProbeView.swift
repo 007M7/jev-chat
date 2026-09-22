@@ -91,6 +91,16 @@ struct ProbeView: View {
                             .font(.caption2).foregroundStyle(.orange)
                     }
 
+                    // 把"这次用的是哪个语境"摊开给用户看——否则判断错了也不知道错在哪
+                    Text("档案：\(a.profileName == "group" ? "群聊" : "一对一") · "
+                         + (a.isGroup ? "多人群聊" : "单聊"))
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Text("关系前提：\(a.relationshipUsed)")
+                        .font(.caption2).foregroundStyle(.secondary).lineLimit(4)
+                    ForEach(a.contextNotes, id: \.self) { n in
+                        Text("⚠ \(n)").font(.caption2).foregroundStyle(.orange)
+                    }
+
                     Divider()
                     Text("候选回复（按合适度排序）").font(.caption).foregroundStyle(.secondary)
                     ForEach(Array(a.candidates.enumerated()), id: \.offset) { i, c in

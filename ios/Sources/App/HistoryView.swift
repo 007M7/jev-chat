@@ -131,6 +131,12 @@ struct SessionDetailView: View {
                             Text("上文：\(ctx)").font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                         }
                         Text(a.actionAdvice).font(.caption)
+                        // 语境透明度：模型以什么关系前提在判断
+                        Text("档案 \(a.profileName) · 关系前提：\(a.relationshipUsed)")
+                            .font(.caption2).foregroundStyle(.secondary).lineLimit(3)
+                        ForEach(a.contextNotes, id: \.self) { n in
+                            Text("⚠ \(n)").font(.caption2).foregroundStyle(.orange)
+                        }
                         ForEach(Array(a.candidates.enumerated()), id: \.offset) { i, c in
                             HStack(alignment: .top, spacing: 5) {
                                 Text("#\(i + 1)").font(.caption2).foregroundStyle(.secondary)

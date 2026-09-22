@@ -21,6 +21,10 @@ struct JevAnalysis {
     var totalSeconds: Double
     var profileName: String
     var calibrated: Bool
+    /// 这次实际注入给判断层的"关系前提"——显示出来便于核对模型到底以什么语境在判断
+    var relationshipUsed: String
+    /// 语境上的不确定处（标题没读到、群聊身份是推断的……），如实显示
+    var contextNotes: [String]
 }
 
 enum JevError: LocalizedError {
@@ -219,11 +223,18 @@ final class JevPipeline {
     /// 早期版本是调用方在分析前用"上一次的标题"猜档案——那会犯两个错：
     /// 第一次分析没有档案；切换会话时会把**上一个会话**的身份信息注入进来，
     /// 而注入错误的身份比不注入更糟（会稳定地把判断带偏）。
-    /// 所以这里把档案做成回调，等标题读到再问调用方要。
     typealias ProfileProvider = (_ title: String, _ isGroup: Bool)
         -> (relationship: String, memory: [String: Any]?)
 
-    func analyze(image: UIImage, profileProvider: ProfileProvider? = nil) async throws -> JevAnalysis {
+    /// 上一帧已知的会话信息，用于兜住"这一帧读不到标题/判断不出群聊"的情况
+    struct SessionHint {
+        var title: String
+        var isGroup: Bool
+    }
+
+    func analyze(image: UIImage,
+                 sessionHint: SessionHint? = nil,
+                 profileProvider: ProfileProvider? = nil) async throws -> JevAnalysis {
         let t0 = Date()
 
         // ---- 1) 感知 ----
@@ -258,8 +269,21 @@ final class JevPipeline {
         let structured = try parseJSONObject(pContent)
         let perceptionSeconds = Date().timeIntervalSince(t0)
 
-        let chatTitle = Self.sanitizeTitle((structured["title"] as? String) ?? "未知会话")
-        let isGroup = (structured["is_group"] as? Bool) ?? false
+        // 标题兜底：这一帧读不到标题时，用上一次已知的会话标题，
+        // 否则会话键会变成「未知会话」，人工填的关系与人物档案就全部失效
+        // （实测：标题被通知横幅盖住时正是这种情形）。
+        let rawTitle = (structured["title"] as? String) ?? ""
+        let cleaned = Self.sanitizeTitle(rawTitle)
+        let titleUnknown = cleaned.isEmpty || cleaned == "未知会话"
+        let chatTitle = titleUnknown ? (sessionHint?.title ?? "未知会话") : cleaned
+
+        // **is_group 的兜底必须落到中性档案**：
+        // 感知层没给出时（画面信息不足）如果落到 one_on_one，而它的默认关系描述是
+        // 「对方是我的伴侣」——实测就在技术群里生成了恋人语气的话术。
+        // "该亲密时没亲密"是轻错，"在工作群里凭空造出恋情"是重错，所以默认群聊档案。
+        let explicitGroup = structured["is_group"] as? Bool
+        let isGroup = explicitGroup ?? sessionHint?.isGroup ?? true
+        let groupInferred = (explicitGroup == nil)
         let rawMsgs = (structured["messages"] as? [[String: Any]]) ?? []
 
         // 映射成统一形态：side / text / sender。非文本转方括号描述
@@ -431,6 +455,17 @@ final class JevPipeline {
             // 排序失败就用原始顺序
         }
 
+        // 语境的不确定处如实记下来，显示给用户——不假装确定
+        var contextNotes: [String] = []
+        if titleUnknown {
+            contextNotes.append(sessionHint == nil
+                ? "这一帧没读到会话标题，也无法沿用上一个会话"
+                : "这一帧没读到会话标题，按上一个会话「\(sessionHint!.title)」处理")
+        }
+        if groupInferred {
+            contextNotes.append("群聊身份是推断的（感知层没给出），已按中性档案判断")
+        }
+
         return JevAnalysis(
             chatTitle: chatTitle,
             isGroup: isGroup,
@@ -449,7 +484,9 @@ final class JevPipeline {
             perceptionSeconds: perceptionSeconds,
             totalSeconds: Date().timeIntervalSince(t0),
             profileName: profileName,
-            calibrated: calibrated
+            calibrated: calibrated,
+            relationshipUsed: relationship,
+            contextNotes: contextNotes
         )
     }
 }

@@ -18,6 +18,12 @@ struct StoredAnalysis: Codable, Identifiable {
     var candidates: [String]
     /// 用户点了第几个候选（0 基）。这是"建议好不好"的唯一客观真值，将来做校准要用。
     var pickedIndex: Int?
+    /// 这次实际注入的关系前提（便于核对模型以什么语境在判断）
+    var relationshipUsed: String = ""
+    /// 语境的不确定处（标题没读到、群聊身份是推断的……）
+    var contextNotes: [String] = []
+    var profileName: String = ""
+    var calibrated: Bool = true
 }
 
 /// 会话档案：**人工填的身份信息**，注入判断层。
