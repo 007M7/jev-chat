@@ -288,8 +288,23 @@ final class JevPipeline {
         // 「对方是我的伴侣」——实测就在技术群里生成了恋人语气的话术。
         // "该亲密时没亲密"是轻错，"在工作群里凭空造出恋情"是重错，所以默认群聊档案。
         let explicitGroup = structured["is_group"] as? Bool
-        let isGroup = explicitGroup ?? sessionHint?.isGroup ?? true
-        let groupInferred = (explicitGroup == nil)
+
+        // **交叉校验**：对方阵营出现两个以上不同发言人时，它不可能是单聊。
+        // 实测踩过——256 人的群被判成 is_group=false，于是用了单聊档案、生成了恋人话术。
+        // 这个判据完全来自数据本身，比模型的 is_group 字段更可靠。
+        var distinctOtherSenders: [String] = []
+        for m in recent where m.side == "other" {
+            if let s = m.sender, !distinctOtherSenders.contains(s) { distinctOtherSenders.append(s) }
+        }
+        let groupBySenders = distinctOtherSenders.count >= 2
+
+        let isGroup: Bool
+        if groupBySenders {
+            isGroup = true
+        } else {
+            isGroup = explicitGroup ?? sessionHint?.isGroup ?? true
+        }
+        let groupInferred = (explicitGroup == nil) || (explicitGroup == false && groupBySenders)
         let rawMsgs = (structured["messages"] as? [[String: Any]]) ?? []
 
         // 映射成统一形态：side / text / sender。非文本转方括号描述
@@ -342,10 +357,7 @@ final class JevPipeline {
             if m.side == "other", let s = m.sender { row["sender"] = s }
             chatMsgs.append(row)
         }
-        var senders: [String] = []
-        for m in recent where m.side == "other" {
-            if let s = m.sender, !senders.contains(s) { senders.append(s) }
-        }
+        let senders = distinctOtherSenders
         var chat: [String: Any] = [
             "relationship": relationship,
             "messages": chatMsgs,
@@ -498,7 +510,9 @@ final class JevPipeline {
                 : "这一帧没读到会话标题，按上一个会话「\(sessionHint!.title)」处理")
         }
         if groupInferred {
-            contextNotes.append("群聊身份是推断的（感知层没给出），已按中性档案判断")
+            contextNotes.append(groupBySenders
+                ? "对方阵营有 \(distinctOtherSenders.count) 个发言人，据此判定为群聊（覆盖了感知层的判断）"
+                : "群聊身份是推断的（感知层没给出），已按中性档案判断")
         }
 
         return JevAnalysis(
