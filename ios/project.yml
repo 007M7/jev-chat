@@ -30,6 +30,9 @@ targets:
     sources:
       - path: Sources
       - path: Shared                 # 与 widget 扩展共用 JevActivityAttributes
+      # Resources/ 由构建时从 tools/jev/ 拷进来（questions.json / prompts.json / providers.json），
+      # **不入库**。这样三端读同一份配置，不在 Swift 里再抄一遍。
+      - path: Resources
     info:
       # XcodeGen 按下面的 properties 生成这个文件（单一来源，别手写一份）
       path: Support/Info.plist

@@ -64,3 +64,6 @@ ios/*.ipa
 
 # Sideloadly 安装在本目录内（工具，不进仓库）
 /Sideloadly/
+
+# iOS 构建时从 tools/jev 拷入的共享配置（不在仓库里存副本）
+ios/Resources/

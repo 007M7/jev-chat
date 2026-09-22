@@ -17,16 +17,95 @@ struct ProbeView: View {
     @State private var permissionAskedAgain: String = "未观察"
     @State private var indicatorSeen: String = "未观察"
     @State private var indicatorNote: String = ""
+    @State private var showSettings = false
 
     var body: some View {
         NavigationStack {
             List {
                 captureSection
+                analysisSection
                 gateOneSection
                 outputSection
                 aboutSection
             }
             .navigationTitle("Jev 采集探针")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Label("设置", systemImage: "gearshape")
+                    }
+                }
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView()
+            }
+        }
+    }
+
+    // MARK: 分析（感知 → 判断 → 起草 → 排序）
+
+    private var analysisSection: some View {
+        Section("分析") {
+            LabeledContent("流水线", value: bridge.status)
+            LabeledContent("已完成分析", value: "\(bridge.analysisCount) 次")
+            if bridge.isAnalyzing {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("感知约 4~6 秒，判断约 1 秒，起草 2~7 秒").font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+            if let err = bridge.lastError {
+                Text(err).font(.footnote).foregroundStyle(.red)
+            }
+
+            if let a = bridge.latest {
+                // 与桌面版面板同构的信息层次：发言人 + 最新消息 + 上文 + 风险 + 建议 + 候选
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(a.chatTitle).font(.caption).foregroundStyle(.secondary)
+                    Text(a.latestText).font(.subheadline).bold()
+                    if let sp = a.speaker {
+                        Text("来自 \(sp)" + (a.contextLine.map { " · 上文：\($0)" } ?? ""))
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else if let ctx = a.contextLine {
+                        Text("上文：\(ctx)").font(.caption).foregroundStyle(.secondary)
+                    }
+
+                    HStack(spacing: 8) {
+                        Text("\(a.dangerLabel) \(String(format: "%.0f", a.danger))/9")
+                            .font(.caption).bold()
+                            .foregroundStyle(a.danger < 3 ? .green : (a.danger < 6 ? .orange : .red))
+                        Text(a.intentLabel).font(.caption).bold()
+                        Text(String(format: "把握 %.0f%%", a.intentConfidence * 100))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Text(a.actionAdvice).font(.footnote)
+
+                    if !a.calibrated {
+                        Text("⚠ 档案 \(a.profileName) 尚未校准，结论仅供参考")
+                            .font(.caption2).foregroundStyle(.orange)
+                    }
+
+                    Divider()
+                    Text("候选回复（按合适度排序）").font(.caption).foregroundStyle(.secondary)
+                    ForEach(Array(a.candidates.enumerated()), id: \.offset) { i, c in
+                        HStack(alignment: .top, spacing: 6) {
+                            Text("#\(i + 1)").font(.caption2).foregroundStyle(.secondary)
+                            Text(c).font(.footnote)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
+            Button("用最近一帧立刻分析一次") {
+                if let img = capture.lastFrame { bridge.analyzeNow(img) }
+            }
+            .disabled(capture.lastFrame == nil || bridge.isAnalyzing)
+
+            Text("正常流程不用点这个：采集到稳定画面会自动分析，结果以通知形式弹出（3 个候选按钮）。")
+                .font(.footnote).foregroundStyle(.secondary)
         }
     }
 

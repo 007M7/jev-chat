@@ -55,6 +55,24 @@ jobs:
       - name: 安装 XcodeGen
         run: brew install xcodegen
 
+      - name: 把 tools/jev 的共享配置拷进 App 包
+        # 题目、感知 prompt、provider 配置三份 JSON 是 Python/桌面版/iOS 的**共享单一来源**。
+        # 不把它们复制进仓库（避免多一份副本漂移），而是在构建时拷进 ios/Resources/ 让 App 读。
+        run: |
+          mkdir -p ios/Resources
+          cp tools/jev/questions.json ios/Resources/
+          cp tools/jev/prompts.json   ios/Resources/
+          cp tools/jev/providers.json ios/Resources/
+          echo "=== 打进包里的配置 ==="
+          ls -la ios/Resources/
+          python3 - <<'PY'
+          import json
+          for n in ("questions", "prompts", "providers"):
+              with open(f"ios/Resources/{n}.json", encoding="utf-8") as f:
+                  d = json.load(f)
+              print(f"  {n}.json 合法，顶层键: {list(d)[:6]}")
+          PY
+
       - name: 生成工程
         working-directory: ios
         run: |
