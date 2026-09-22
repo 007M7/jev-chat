@@ -58,7 +58,23 @@ struct SessionProfile: Codable {
     }
 }
 
-/// 本地记录：按会话分组保存分析结果，并维护会话档案。
+/// **全局人物档案**：同一个人可能在多个群里出现，身份应该跨会话生效。
+///
+/// 早期只把身份存在会话里，导致"同一个人在 A 群认得、在 B 群不认得"——
+/// 这正是用户说的"分不清不同的用户"。现在：
+///   - 通用身份（他是谁 / 什么角色）存在这里，**一次填写全局生效**
+///   - 会话里只保留"在本群的角色"这类局部信息
+struct Person: Codable, Identifiable {
+    var key: String                 // 归一化后的名字，作为主键
+    var displayName: String
+    var aliases: [String] = []      // 视觉模型可能把昵称读成几种写法
+    var identity: String = ""       // 通用身份描述
+    var seenCount: Int = 0
+    var updatedAt: Date = Date()
+    var id: String { key }
+}
+
+/// 本地记录：按会话分组保存分析结果，并维护会话档案与全局人物档案。
 ///
 /// 存 Documents 目录（App 私有），**不上传**。截图本身仍只留在内存里，
 /// 这里存的是结构化文本（对话摘录 + 判断结果），是"可查的记录"而非原始图像。
@@ -68,9 +84,11 @@ final class AnalysisStore: ObservableObject {
 
     @Published private(set) var analyses: [StoredAnalysis] = []
     @Published private(set) var profiles: [String: SessionProfile] = [:]
+    @Published private(set) var persons: [String: Person] = [:]
 
     private let historyURL = AnalysisStore.docURL("jev_history.json")
     private let profileURL = AnalysisStore.docURL("jev_profiles.json")
+    private let personURL = AnalysisStore.docURL("jev_persons.json")
 
     private static func docURL(_ name: String) -> URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -129,6 +147,8 @@ final class AnalysisStore: ObservableObject {
         // 只留最近 500 条，避免文件无限增长
         if analyses.count > 500 { analyses.removeFirst(analyses.count - 500) }
         ensureProfile(key: a.sessionKey, title: a.chatTitle, isGroup: a.isGroup)
+        // 见到新的发言人就在全局人物表里登记（身份留空，等用户填）
+        if let s = a.speaker, !s.isEmpty { ensurePerson(s) }
         save()
     }
 
@@ -202,7 +222,69 @@ final class AnalysisStore: ObservableObject {
     func clearAll() {
         analyses.removeAll()
         profiles.removeAll()
+        persons.removeAll()
         save()
+    }
+
+    // MARK: 全局人物
+
+    /// 归一化名字做键：视觉模型会把昵称读成几种写法，靠归一化归并
+    static func personKey(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    func ensurePerson(_ name: String) {
+        let k = Self.personKey(name)
+        guard !k.isEmpty else { return }
+        if var p = persons[k] {
+            p.seenCount += 1
+            if !p.aliases.contains(name) && p.displayName != name { p.aliases.append(name) }
+            persons[k] = p
+        } else {
+            persons[k] = Person(key: k, displayName: name, seenCount: 1)
+        }
+    }
+
+    /// 某人的**通用身份**（跨会话）
+    func personIdentity(_ name: String) -> String {
+        persons[Self.personKey(name)]?.identity ?? ""
+    }
+
+    func setPersonIdentity(_ text: String, name: String) {
+        let k = Self.personKey(name)
+        guard !k.isEmpty else { return }
+        var p = persons[k] ?? Person(key: k, displayName: name)
+        p.identity = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        p.updatedAt = Date()
+        persons[k] = p
+        save()
+    }
+
+    /// 所有已知人物，按出现次数降序
+    var knownPeople: [Person] {
+        persons.values.sorted { ($0.seenCount, $0.displayName) > ($1.seenCount, $1.displayName) }
+    }
+
+    /// 拼给判断层的人物事实：通用身份 + 在本会话的角色（两者都有就都写）
+    func personFacts(inSession key: String) -> [String] {
+        let prof = profiles[key]
+        var names: [String] = speakers(in: key)
+        if let p = prof { for n in p.notes.keys where n != "group" && !names.contains(n) { names.append(n) } }
+
+        var out: [String] = []
+        for n in names {
+            let global = personIdentity(n)
+            let local = prof?.notes[n] ?? ""
+            if !global.isEmpty && !local.isEmpty {
+                out.append("\(n)：\(global)（在本会话：\(local)）")
+            } else if !global.isEmpty {
+                out.append("\(n)：\(global)")
+            } else if !local.isEmpty {
+                out.append("\(n)：\(local)")
+            }
+        }
+        if let g = prof?.notes["group"], !g.isEmpty { out.insert("会话定位：\(g)", at: 0) }
+        return out.sorted()
     }
 
     // MARK: 落盘
@@ -214,6 +296,8 @@ final class AnalysisStore: ObservableObject {
            let v = try? dec.decode([StoredAnalysis].self, from: d) { analyses = v }
         if let d = try? Data(contentsOf: profileURL),
            let v = try? dec.decode([String: SessionProfile].self, from: d) { profiles = v }
+        if let d = try? Data(contentsOf: personURL),
+           let v = try? dec.decode([String: Person].self, from: d) { persons = v }
     }
 
     private func save() {
@@ -222,5 +306,6 @@ final class AnalysisStore: ObservableObject {
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let d = try? enc.encode(analyses) { try? d.write(to: historyURL, options: .atomic) }
         if let d = try? enc.encode(profiles) { try? d.write(to: profileURL, options: .atomic) }
+        if let d = try? enc.encode(persons) { try? d.write(to: personURL, options: .atomic) }
     }
 }

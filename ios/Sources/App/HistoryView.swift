@@ -39,8 +39,59 @@ struct HistoryView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
+
+                // 全局人物：身份跨会话通用——同一个人在哪个群填过，所有群都认得
+                if !store.knownPeople.isEmpty {
+                    Section {
+                        ForEach(store.knownPeople.prefix(20)) { p in
+                            PersonRow(person: p, store: store)
+                        }
+                    } header: {
+                        Text("人物（身份跨会话通用）")
+                    } footer: {
+                        Text("在这里填一次，所有会话都认得这个人。会话详情里还能补「在本群的角色」。")
+                    }
+                }
             }
             .navigationTitle("记录")
+        }
+    }
+}
+
+/// 全局人物的编辑行：填一次，所有会话都生效
+struct PersonRow: View {
+    let person: Person
+    @ObservedObject var store: AnalysisStore
+    @State private var draft: String = ""
+    @State private var loaded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: "person.crop.circle").font(.caption)
+                Text(person.displayName).font(.subheadline).bold()
+                Text("见过 \(person.seenCount) 次").font(.caption2).foregroundStyle(.secondary)
+                if !person.identity.isEmpty {
+                    Image(systemName: "checkmark.seal.fill").font(.caption2).foregroundStyle(.green)
+                }
+            }
+            if !person.aliases.isEmpty {
+                Text("另读到过：" + person.aliases.joined(separator: "、"))
+                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            TextField("他是谁 / 什么角色（所有群通用）", text: $draft, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .font(.footnote)
+            Button("保存（全局）") {
+                store.setPersonIdentity(draft, name: person.displayName)
+            }
+            .font(.caption)
+        }
+        .padding(.vertical, 2)
+        .onAppear {
+            guard !loaded else { return }
+            draft = person.identity
+            loaded = true
         }
     }
 }

@@ -88,17 +88,19 @@ final class AppBridge: ObservableObject {
                 let a = try await pipeline.analyze(image: image, sessionHint: lastSession) { [weak self] title, isGroup in
                     guard let self else { return ("", nil) }
                     let key = self.store.sessionKey(for: title, isGroup: isGroup)
-                    guard let p = self.store.profiles[key] else { return ("", nil) }
 
-                    // 人工填的关系与人物身份 → 注入判断层
-                    let rel = p.relationshipText(fallback: "")
+                    // 人工填的关系与人物身份 → 注入判断层。
+                    // 人物身份是**跨会话**的：同一个人在其他群填过，这里也会带上。
+                    let rel = self.store.profiles[key]?.relationshipText(fallback: "") ?? ""
+                    let facts = self.store.personFacts(inSession: key)
                     var mem: [String: Any]? = nil
-                    if !p.notes.isEmpty {
+                    if !facts.isEmpty {
                         mem = [
-                            "note": "以下是人工维护的会话与人物档案，属于已知前提，不是当前对话内容",
-                            "chat_title": p.title,
-                            "is_group": p.isGroup,
-                            "facts": ["人工档案": p.notes.map { "\($0.key)：\($0.value)" }.sorted()],
+                            "note": "以下是人工维护的会话与人物档案（人物身份跨会话通用），"
+                                  + "属于已知前提，不是当前对话内容",
+                            "chat_title": title,
+                            "is_group": isGroup,
+                            "facts": ["人工档案": facts],
                         ]
                     }
                     return (rel, mem)

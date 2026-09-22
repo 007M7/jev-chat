@@ -410,6 +410,35 @@ final class JevPipeline {
             .replacingOccurrences(of: "{relationship}", with: relationship)
             .replacingOccurrences(of: "{convo}", with: convo)
 
+        // **把判断结论作为条件传给起草模型**。
+        // 实测问题：Jev 判了「不必回」，候选却仍是"在呢，刚忙完，怎么啦？"这种等着接话的语气——
+        // 因为起草模型只看到对话原文，不知道这条未必是冲我说的。
+        // 这一步是"理解语境"的落点：结论必须影响候选的语气与多少。
+        var draftUserText = userText
+        // "不必由我回应"的判定：群聊看 best_group_action=no_reply，或 need_reply 低；
+        // 一对一没有 no_reply 档，用 should_reply_now 低来近似
+        let noReply = (actionKey == "no_reply") || (shouldReply < 0.4)
+        var verdictLines: [String] = []
+        verdictLines.append("已有判断（必须与之相符）：")
+        verdictLines.append("- 发言人是：\(latest?.sender ?? "对方")")
+        verdictLines.append("- 意图：\(Self.intentLabels[intentKey] ?? intentKey)")
+        verdictLines.append("- 建议动作：\(Self.actionLabels[actionKey] ?? actionKey)")
+        verdictLines.append(String(format: "- 是否该由我回应：%@（%.2f）",
+                                   shouldReply >= 0.5 ? "是" : "否", shouldReply))
+        if isGroup, let a = answers["asked_to_me"] as? [String: Any],
+           let v = a["noul"] as? Double {
+            verdictLines.append(String(format: "- 这条是否在对我说的：%@（%.2f）",
+                                       v >= 0.5 ? "是" : "否", v))
+        }
+        if noReply {
+            verdictLines.append("")
+            verdictLines.append("因为判断是**不必由我回应**：三条候选都必须是**很轻的、不打断话题**的承接语"
+                                + "（例如表示看到、稍后跟进、认同别人说的话），"
+                                + "不要出现等待对方回答的提问，不要追问，不要主动挑起新话题。"
+                                + "如果连承接都不必要，就把它们写得更短更随意。")
+        }
+        draftUserText += "\n\n" + verdictLines.joined(separator: "\n")
+
         var candidates: [String] = []
         do {
             let draftBody: [String: Any] = [
@@ -418,7 +447,7 @@ final class JevPipeline {
                 "max_tokens": analysis.maxTokens ?? 2000,
                 "messages": [
                     ["role": "system", "content": (draft["system_prompt"] as? String) ?? ""],
-                    ["role": "user", "content": userText],
+                    ["role": "user", "content": draftUserText],
                 ],
             ]
             let dResp = try await postJSON(draftBody, to: analysis, timeout: analysis.timeout)
