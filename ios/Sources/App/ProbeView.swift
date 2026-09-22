@@ -42,7 +42,7 @@ struct ProbeView: View {
     private var behaviorSection: some View {
         Section {
             Toggle("自动分析", isOn: $bridge.autoAnalyze)
-            Toggle("快速模式（只出判断，不生成候选）", isOn: $bridge.fastMode)
+            Toggle("快速模式", isOn: $bridge.fastMode)
             Toggle("安静模式（只在需要我回应或有风险时弹通知）", isOn: $bridge.quietNotifications)
 
             Picker("只跟随这个会话", selection: $store.followSessionKey) {
@@ -61,6 +61,12 @@ struct ProbeView: View {
         } footer: {
             Text("「只跟随这个会话」是给「我一边在微信聊天、一边又去用别的 App」这种情况准备的："
                  + "不定死目标时，屏幕上任何像聊天的界面（比如你在 QQ 里翻截图）都会被当成对话分析。")
+            + Text("\n\n快速模式跳过「起草候选 + 排序」两步，只出判断。"
+                   + "实测这两步占 3～8 秒（起草 2.2~7.0s、排序 0.9~1.1s），"
+                   + "关闭后总耗时约少三分之一，也省掉约 600 个输出 token。"
+                   + "适合你只想先知道「该不该回、有没有风险」、打算自己写回复的时候。"
+                   + "注意：耗时的**大头是感知**（4.4~15.5s，视觉模型读屏），快速模式动不了它。")
+            + Text("\n\n安静模式不影响记录——判定不值得打扰时照样把分析记下来，只是不弹通知。")
         }
     }
 
@@ -86,10 +92,20 @@ struct ProbeView: View {
 
             if capture.isCapturing {
                 Button("停止采集", role: .destructive) { capture.stop() }
+                Text("停止后授权会保留，再点开始不会重新弹确认。")
+                    .font(.footnote).foregroundStyle(.secondary)
             } else {
                 Button("开始采集") { capture.requestPermissionAndStart() }
                     .disabled(!capture.captureSupported)
             }
+
+            Button("重新选择采集目标") { capture.reselectTarget() }
+                .disabled(!capture.captureSupported)
+            Text("iOS 只允许通过系统的共享选择器授权屏幕采集，而且**没有**保存授权的接口"
+                 + "（已查 iOS 27 SDK：ScreenCaptureKit 里没有持久化 API，"
+                 + "SCShareableContent 在 iOS 上不可用）。"
+                 + "所以：每次重开 App 需要确认一次；在 App 没退出时开始/停止不再重复确认。")
+                .font(.footnote).foregroundStyle(.secondary)
         }
     }
 

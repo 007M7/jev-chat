@@ -11,6 +11,16 @@ import UIKit
 /// 上层控制器就能在 iOS 26 上正常编译与运行（只是没有采集能力）。
 ///
 /// 对外只通过闭包回传数据，所以调用方不需要 import ScreenCaptureKit。
+///
+/// **关于"不要每次开始采集都弹确认"**（用户实测反馈）：查过 iOS 27 SDK 的
+/// ScreenCaptureKit 头文件与 .swiftinterface，结论是硬限制 + 一条可做的优化：
+///   - SDK 里没有任何持久化 API（`persist` / `NSSecureCoding` / `archive` 零命中），
+///     `SCShareableContent` / `SCDisplay` / `SCWindow` 全是 `API_UNAVAILABLE(ios)`，
+///     所以 iOS 上**只能**从 picker 拿到 `SCContentFilter`，也无法把它存盘复用。
+///     跨 App 重启必然要再确认一次，这是系统隐私保证，绕不过去。
+///   - 但**同一次运行内不必重复确认**：filter 与 stream 都可以留着，
+///     stop 之后重新 startCapture() 即可。本类就是按这个思路改的
+///     （见 `pause()` / `resume()`），只有首次或用户主动"重新选目标"时才弹 picker。
 @available(iOS 27.0, *)
 final class ScreenCaptureEngine: NSObject {
 
@@ -25,6 +35,9 @@ final class ScreenCaptureEngine: NSObject {
 
     private var stream: SCStream?
     private var filter: SCContentFilter?
+    /// 是否已经拿到过授权（有 filter）。上层据此决定"直接恢复"还是"弹 picker"。
+    var isAuthorized: Bool { filter != nil }
+
     private static let frameQueue = DispatchQueue(label: "jev.capture.frames")
     private nonisolated(unsafe) static var frameCounter = 0
     private nonisolated(unsafe) static var lastSnapshotAt: Date?
@@ -39,6 +52,11 @@ final class ScreenCaptureEngine: NSObject {
     /// 有一个 `activatePicker()` 步骤，作用就是设置这个属性：
     ///   `picker.defaultConfiguration = ...; activatePicker(); picker.present()`
     /// 我第一版漏了它，症状与用户反馈完全一致。
+    ///
+    /// `presentPicker(usingContentStyle: .display)` 比 `present()` 少一步：
+    /// 直接进到"选屏幕"这一步，不再让用户先选"要共享窗口还是屏幕"。
+    /// iPhone 上能共享的本来就只有整屏，所以这一步是纯多余。`.display` 在
+    /// iOS 27 是可用的（`SCShareableContentStyleDisplay` 标了 ios(27.0)）。
     func requestPermission() {
         let picker = SCContentSharingPicker.shared
         picker.add(self)                 // 注册观察者，这样才能收到用户选定的 filter
@@ -48,13 +66,64 @@ final class ScreenCaptureEngine: NSObject {
         config.showsMicrophoneControl = false
         picker.defaultConfiguration = config
 
+        // 先问系统"这台设备上屏幕录制到底可不可用"，避免失败时只有一个含糊的错误。
+        // （`isAvailable` 是 iOS 27 新增，SDK 头文件标了 ios(27.0)。）
+        guard picker.isAvailable else {
+            onError?("系统不允许屏幕录制：到「设置 → 隐私与安全性 → 屏幕录制」里允许本 App，然后重试。")
+            onStatus?("未获屏幕录制权限")
+            return
+        }
+
         picker.isActive = true           // ← 关键，漏了它 present() 无效
-        onStatus?("等待你在系统选择器里选「整个屏幕」…")
-        picker.present()
+        onStatus?("等待你在系统选择器里确认共享屏幕…")
+        picker.presentPicker(usingContentStyle: .display)
     }
 
+    /// 首次：拿到 filter 后建流并开播。
     func start(with filter: SCContentFilter) async {
         self.filter = filter
+        await startStream(with: filter)
+    }
+
+    /// 再次开始：复用已有的 filter 与 stream，**不弹 picker**。
+    /// 失败（权限被收回、流已被系统销毁等）时返回 false，交给上层回退到弹 picker。
+    @discardableResult
+    func resume() async -> Bool {
+        guard let f = filter else { return false }
+        if let s = stream {
+            do {
+                try await s.startCapture()
+                onStatus?("采集中（已复用上次的屏幕授权，未再次确认）")
+                return true
+            } catch {
+                // 流已不可用：丢掉它，用现有 filter 重建一个
+                stream = nil
+                onError?("恢复采集流失败，正在用已有授权重建：\(error.localizedDescription)")
+            }
+        }
+        guard await startStream(with: f) else { return false }
+        onStatus?("采集中（复用上次的屏幕授权，未再次确认）")
+        return true
+    }
+
+    /// 临时停止：**保留 filter 与 stream**，下次 resume() 才能不弹 picker。
+    func pause() {
+        Task {
+            try? await stream?.stopCapture()
+        }
+        onStatus?("已停止（授权保留，再点开始不用重新确认）")
+    }
+
+    /// 彻底停止并丢掉授权：下次开始会重新弹 picker（换目标/排查问题用）。
+    func stop() {
+        Task {
+            try? await stream?.stopCapture()
+            stream = nil
+        }
+        filter = nil
+    }
+
+    private func startStream(with filter: SCContentFilter) async -> Bool {
         let config = SCStreamConfiguration()
         // iOS 上不能设 minimumFrameInterval / showsCursor（macOS 专属，云构建实测报
         // 'unavailable in iOS'），所以帧率限流只能自己做——见 didOutputSampleBuffer。
@@ -64,16 +133,11 @@ final class ScreenCaptureEngine: NSObject {
             try await s.startCapture()
             self.stream = s
             onStatus?("采集中")
+            return true
         } catch {
             onError?("启动采集失败: \(error.localizedDescription)")
             onStatus?("启动失败")
-        }
-    }
-
-    func stop() {
-        Task {
-            try? await stream?.stopCapture()
-            stream = nil
+            return false
         }
     }
 }
@@ -119,8 +183,13 @@ extension ScreenCaptureEngine: SCStreamDelegate {
     nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
         let msg = error.localizedDescription
         DispatchQueue.main.async { [weak self] in
-            self?.onStatus?("流被停止")
-            self?.onError?("采集流被停止: \(msg)")
+            guard let self else { return }
+            // 流被系统销毁了（用户从控制中心停录、权限被收回、目标窗口没了……）：
+            // 丢掉 stream，让下一次 resume() 用现有 filter 重建；filter 先留着——
+            // 权限往往还在，重建能直接成功，没必要让用户再确认一次。
+            self.stream = nil
+            self.onStatus?("流被停止")
+            self.onError?("采集流被停止: \(msg)")
         }
     }
 }

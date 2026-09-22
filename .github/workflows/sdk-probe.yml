@@ -47,12 +47,11 @@ jobs:
           # Swift 接口可能内联在 SwiftUI/其它框架里，另一个可能的位置：
           find "$SDK/usr/lib/swift" -maxdepth 2 -name 'ScreenCaptureKit*' 2>/dev/null | head
 
-      - name: 搜索关键字
+      - name: 关键字搜索
         env:
           PATTERN: ${{ inputs.pattern }}
           CTX: ${{ inputs.context }}
         run: |
-          set -euo pipefail
           SDK="${{ steps.find.outputs.sdk }}"
           files=$(find "$SDK/System/Library/Frameworks/ScreenCaptureKit.framework" \
                    -name '*.swiftinterface' 2>/dev/null)
@@ -64,9 +63,54 @@ jobs:
           echo "搜索文件："; echo "$files"
           echo
           if [ "${CTX:-0}" -gt 0 ] 2>/dev/null; then
-            grep -nE -B"$CTX" -A"$CTX" "$PATTERN" $files | head -400 || true
+            grep -nE -B"$CTX" -A"$CTX" "${PATTERN:-.}" $files | head -400 || true
           else
-            grep -nE "$PATTERN" $files | head -400 || true
+            grep -nE "${PATTERN:-.}" $files | head -400 || true
+          fi
+
+      # ★ 这一步是重点：**用真 SDK 做类型检查**，而不是靠推断 Swift 名字。
+      # ObjC 方法导入 Swift 后的确切名字（如 presentPickerUsingContentStyle:
+      # 到底是 presentPicker(usingContentStyle:) 还是别的）无法从头文件直读，
+      # 猜错的代价是十分钟起步的一次云构建失败。这里 40 秒就能给出确切答案。
+      - name: 用真 SDK 类型检查一段用了这些 API 的代码
+        run: |
+          SDK="${{ steps.find.outputs.sdk }}"
+          cat > /tmp/typecheck.swift <<'SWIFT'
+          import ScreenCaptureKit
+          import UIKit
+
+          @available(iOS 27.0, *)
+          func probe(_ picker: SCContentSharingPicker) {
+            // 下面每一行都是 App 里真的用到的调用，逐一确认「名字」与「可用性」
+            let _: Bool = picker.isAvailable
+            picker.isActive = true
+            var cfg = SCContentSharingPickerConfiguration()
+            cfg.showsMicrophoneControl = false
+            cfg.showsCameraControl = false
+            picker.defaultConfiguration = cfg
+            picker.presentPicker(usingContentStyle: .display)
+            picker.present()
+          }
+
+          @available(iOS 27.0, *)
+          final class NoopObserver: NSObject, SCContentSharingPickerObserver {
+            func contentSharingPicker(_ p: SCContentSharingPicker,
+                                      didUpdateWith f: SCContentFilter, for s: SCStream?) {}
+            func contentSharingPicker(_ p: SCContentSharingPicker, didCancelFor s: SCStream?) {}
+            func contentSharingPickerStartDidFailWithError(_ e: Error) {}
+          }
+          SWIFT
+          echo "===== 待类型检查的代码 ====="
+          cat -n /tmp/typecheck.swift
+          echo
+          echo "===== swiftc 结果 ====="
+          # 只做类型检查，不产出二进制。失败时把 error 原文打出来。
+          if xcrun swiftc -typecheck -sdk "$SDK" -target arm64-apple-ios27.0 \
+               /tmp/typecheck.swift 2>&1; then
+            echo "✅ 全部通过：上面用到的 API 名字与可用性都对"
+          else
+            echo "❌ 有不通过的地方，看上面的 error 行"
+            exit 1
           fi
 
       - name: 打印 ScreenCaptureKit 的完整可用面

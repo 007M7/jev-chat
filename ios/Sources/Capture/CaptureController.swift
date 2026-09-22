@@ -89,7 +89,66 @@ final class CaptureController: NSObject, ObservableObject {
             statusText = "不支持采集"
             return
         }
+        gate.reset()
+        startTicking()
+
+        // **已经拿到过授权就直接恢复，不再弹系统的屏幕共享确认。**
+        // 用户实测反馈"每次开始采集都弹确认键"——同一次运行内这是可以避免的：
+        // filter 与 stream 都留着，stop 之后重新 startCapture() 即可。
+        // （跨 App 重启必然要再确认一次：iOS 27 的 ScreenCaptureKit 没有任何
+        //  filter 持久化 API，SCShareableContent 在 iOS 上也不可用，见引擎里的说明。）
+        if #available(iOS 27.0, *), let e = engine as? ScreenCaptureEngine, e.isAuthorized {
+            resumeExisting(e)
+            return
+        }
+        makeEngineAndAskPermission()
+    }
+
+    /// 复用已有授权继续采集（失败则回退到弹 picker）。
+    ///
+    /// 单独一个方法而不是写在 `requestPermissionAndStart` 里，是因为它的参数与
+    /// 局部变量都是 iOS 27 才有的类型：**在带可用性标注的方法里，闭包内部也在
+    /// "已确认可用"的上下文里**；而把 Task 闭包直接写在 `if #available` 分支里时，
+    /// 闭包是否继承外层的可用性收敛不够确定，本地又没编译器可验。宁可写长一点。
+    @available(iOS 27.0, *)
+    private func resumeExisting(_ e: ScreenCaptureEngine) {
+        statusText = "正在恢复采集（不用再确认）…"
+        isCapturing = true
+        Task { @MainActor in
+            let ok = await e.resume()
+            if !ok {
+                // 复用失败（权限被收回等）→ 老老实实回到弹 picker 的路径
+                self.makeEngineAndAskPermission()
+            }
+        }
+    }
+
+    /// 造一个新引擎并走系统选择器。首次开始、或用户主动"重新选采集目标"时走这里。
+    private func makeEngineAndAskPermission() {
+        guard #available(iOS 27.0, *) else { return }
         let e = ScreenCaptureEngine()
+        wire(e)
+        engine = e
+        isCapturing = true
+        e.requestPermission()
+    }
+
+    /// 重新选采集目标：丢掉已有授权，下次开始会重新弹 picker。
+    func reselectTarget() {
+        lastError = nil
+        if #available(iOS 27.0, *) {
+            (engine as? ScreenCaptureEngine)?.stop()
+            engine = nil
+        }
+        isCapturing = false
+        statusText = "已清除屏幕授权，下次开始会重新让你选"
+    }
+
+    /// 把引擎的三个回调接到本控制器。
+    /// 标 `@available(iOS 27.0, *)` 是因为参数类型本身只在 iOS 27 存在——
+    /// 签名里出现受限类型就必须自己带上可用性标注，否则编译不过。
+    @available(iOS 27.0, *)
+    private func wire(_ e: ScreenCaptureEngine) {
         // 引擎回调在主线程发出，这里再显式切一次主 actor，保证状态更新安全
         e.onFrame = { [weak self] w, h, img, at in
             Task { @MainActor in
@@ -103,7 +162,7 @@ final class CaptureController: NSObject, ObservableObject {
                 // 状态推进到"采集中"说明这次真的起来了——把上一条失败文案清掉。
                 // 实测踩过：旧错误与新状态并存（"启动采集失败: 无法开始流播放" + "采集中"），
                 // 让人以为现在还是坏的。
-                if s == "采集中" {
+                if s.hasPrefix("采集中") {
                     self.lastError = nil
                     self.isCapturing = true
                 }
@@ -118,20 +177,14 @@ final class CaptureController: NSObject, ObservableObject {
                 self.statusText = "启动失败"
             }
         }
-        engine = e
-        isCapturing = true
-        gate.reset()
-        startTicking()
-        e.requestPermission()
     }
 
+    /// 停止采集：**保留屏幕授权**，所以下次开始不会再弹确认。
     func stop() {
         if #available(iOS 27.0, *) {
-            (engine as? ScreenCaptureEngine)?.stop()
+            (engine as? ScreenCaptureEngine)?.pause()
         }
-        engine = nil
         isCapturing = false
-        statusText = "已停止"
         tickTimer?.invalidate()
         tickTimer = nil
     }
@@ -184,6 +237,9 @@ final class CaptureController: NSObject, ObservableObject {
         isAppInBackground = true
         sessions.append(BackgroundSession(enteredAt: Date(), exitedAt: nil,
                                          framesAtEnter: totalFrames, framesAtExit: nil))
+        // 这份日志是 Gate 1 探针的取证材料（"切到微信后还收不收帧"），
+        // 已经答完了，但留着当诊断有用。加个上限免得无限增长——它每次前后台切换都追加一条。
+        if sessions.count > 200 { sessions.removeFirst(sessions.count - 200) }
         saveLog()
     }
 
