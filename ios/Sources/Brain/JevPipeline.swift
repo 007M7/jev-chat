@@ -251,7 +251,13 @@ final class JevPipeline {
         guard let perception = BrainConfig.provider(role: "perception") else {
             throw JevError.config("providers.json 里 roles.perception 没配好")
         }
-        guard let jpeg = image.jpegData(compressionQuality: 0.8) else {
+        // **先把图缩小再上传**。
+        // 屏幕截图是 1180×2556 左右，整张转 base64 有几百 KB；
+        // 实测在网络不稳时（用户环境）感知一步能拖到 47 秒——上传体积是可控的那部分。
+        // 视觉模型读聊天文字不需要原分辨率，长边压到 1600 足够，
+        // 体积大约降到原来的 1/3。
+        let prepared = Self.downscaled(image, maxSide: 1600)
+        guard let jpeg = prepared.jpegData(compressionQuality: 0.7) else {
             throw JevError.config("当前帧无法编码为图片")
         }
         let dataURL = "data:image/jpeg;base64," + jpeg.base64EncodedString()
@@ -550,6 +556,17 @@ final class JevPipeline {
             messageCount: recent.count,
             messageSignature: Self.signature(of: recent)
         )
+    }
+
+    /// 长边压到 maxSide。用于降低感知请求的上传体积。
+    static func downscaled(_ image: UIImage, maxSide: CGFloat) -> UIImage {
+        let w = image.size.width, h = image.size.height
+        guard w > 0, h > 0 else { return image }
+        let scale = maxSide / max(w, h)
+        if scale >= 1 { return image }
+        let target = CGSize(width: (w * scale).rounded(), height: (h * scale).rounded())
+        let renderer = UIGraphicsImageRenderer(size: target)
+        return renderer.image { _ in image.draw(in: CGRect(origin: .zero, size: target)) }
     }
 
     /// 消息内容签名：取最后 8 条（与安卓 ChatModels.signature 同思路），**用于内容级去重**。

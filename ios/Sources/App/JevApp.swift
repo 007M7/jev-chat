@@ -78,6 +78,9 @@ final class AppBridge: ObservableObject {
 
     private static let kAuto = "jev_auto_analyze"
     private static let kFast = "jev_fast_mode"
+    /// 分析中的计时器：界面上显示"已 N 秒"，让"慢"变成可观察的数字而不是感觉
+    private var progressTimer: Timer?
+    private var analysisStartedAt: Date?
 
     func setUp() {
         // 通知的注册已经在 AppDelegate 里做了；这里只补一次以免首帧竞态
@@ -119,7 +122,9 @@ final class AppBridge: ObservableObject {
         }
         isAnalyzing = true
         lastError = nil
-        status = "分析中…"
+        analysisStartedAt = Date()
+        status = "分析中… 0s"
+        startProgressTimer()
 
         Task {
             do {
@@ -153,7 +158,7 @@ final class AppBridge: ObservableObject {
                 if a.messageCount == 0 {
                     skippedNotChat += 1
                     status = "这一帧没读到对话（不是聊天界面？），已跳过"
-                    isAnalyzing = false
+                    finishAnalysis()
                     return
                 }
 
@@ -163,7 +168,7 @@ final class AppBridge: ObservableObject {
                 if let target = store.followSessionKey, target != skey {
                     skippedNotTarget += 1
                     status = "当前不在跟随的会话里（\(a.chatTitle)），已跳过"
-                    isAnalyzing = false
+                    finishAnalysis()
                     return
                 }
 
@@ -171,7 +176,7 @@ final class AppBridge: ObservableObject {
                 if let prev = lastSignature[skey], prev == a.messageSignature {
                     skippedAsRepeat += 1
                     status = "对话内容与上次相同，已跳过"
-                    isAnalyzing = false
+                    finishAnalysis()
                     return
                 }
 
@@ -179,7 +184,7 @@ final class AppBridge: ObservableObject {
                 if JevPipeline.looksLikeOurEcho(a.latestText, recentCandidates: recentCandidates) {
                     skippedAsEcho += 1
                     status = "这一帧读到了自己的通知，已丢弃"
-                    isAnalyzing = false
+                    finishAnalysis()
                     return
                 }
 
@@ -233,8 +238,30 @@ final class AppBridge: ObservableObject {
                 lastError = error.localizedDescription
                 status = "分析失败"
             }
-            isAnalyzing = false
+            finishAnalysis()
         }
+    }
+
+    /// 收口的结束动作：停表 + 复位标志。所有跳过路径都必须走它，
+    /// 否则计时器会继续空转（状态栏一直涨秒数，但什么都没在跑）。
+    private func finishAnalysis() {
+        stopProgressTimer()
+        isAnalyzing = false
+    }
+
+    private func startProgressTimer() {
+        progressTimer?.invalidate()
+        progressTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, let t0 = self.analysisStartedAt else { return }
+                self.status = String(format: "分析中… 已 %.0f 秒", Date().timeIntervalSince(t0))
+            }
+        }
+    }
+
+    private func stopProgressTimer() {
+        progressTimer?.invalidate()
+        progressTimer = nil
     }
 
     /// 用界面里"最近一帧"手动跑一次（不依赖门放行、也不受自动开关限制），方便调试
