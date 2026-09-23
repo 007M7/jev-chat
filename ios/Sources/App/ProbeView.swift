@@ -16,11 +16,13 @@ struct ProbeView: View {
     @State private var permissionAskedAgain: String = "未观察"
     @State private var indicatorSeen: String = "未观察"
     @State private var indicatorNote: String = ""
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
             List {
                 captureSection
+                notifySection
                 behaviorSection
                 analysisSection
                 diagnosticsSection
@@ -34,6 +36,11 @@ struct ProbeView: View {
                 }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            // 从系统设置改完通知权限回来时刷新一次，否则界面还显示旧状态
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { bridge.refreshNotificationStatus() }
+            }
+            .onAppear { bridge.refreshNotificationStatus() }
         }
     }
 
@@ -109,6 +116,30 @@ struct ProbeView: View {
         }
     }
 
+    // MARK: 通知能不能弹（用户反馈"关掉安静模式也不弹"，先让这件事可见）
+
+    private var notifySection: some View {
+        Section {
+            LabeledContent("通知权限", value: bridge.notificationStatus)
+            if !bridge.notificationAllowed {
+                Button("去系统设置里打开通知") {
+                    if let u = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(u)
+                    }
+                }
+                .font(.footnote)
+            }
+            Button("弹一条测试通知（立刻验证）") { bridge.selfTestOutput() }
+                .font(.footnote)
+        } header: {
+            Text("通知")
+        } footer: {
+            Text("系统层的通知授权一旦被拒，代码是**静默失败**的——App 里看不出任何异常，"
+                 + "你也收不到任何弹窗。免费签名重装后 Bundle ID 若被换掉，系统会当成新 App，"
+                 + "授权需要重新给一次。所以先点上面的测试通知确认这条通道是通的。")
+        }
+    }
+
     // MARK: 最近一次分析
 
     private var analysisSection: some View {
@@ -116,9 +147,16 @@ struct ProbeView: View {
             if bridge.isAnalyzing {
                 HStack(spacing: 8) {
                     ProgressView()
-                    Text("分析中…（一轮大约十几秒：视觉模型读屏幕最慢，约 4-7 秒）")
+                    // 显示**当前阶段**，而不是一句静态的预估耗时。
+                    // 用户反馈过"一直转圈、几十秒甚至几分钟没结果"——只给秒数看不出
+                    // 卡在哪一步（感知最慢、还是起草）。阶段 + 计时才能自己判断。
+                    Text(bridge.stage.isEmpty ? "分析中…" : "\(bridge.stage)…")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
+                Text("每一步都有时间上限（感知 40s / 判断 25s / 起草 35s / 排序 20s），"
+                     + "超时就会放弃这一轮并说明是哪一步，不会一直等下去。"
+                     + "实测参考：感知 4~16 秒是主要耗时，判断约 1~2 秒。")
+                    .font(.caption2).foregroundStyle(.secondary)
             }
             Text(bridge.status).font(.footnote).foregroundStyle(.secondary)
 

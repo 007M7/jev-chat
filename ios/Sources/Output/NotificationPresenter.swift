@@ -53,6 +53,27 @@ final class NotificationPresenter: NSObject {
         }
     }
 
+    /// 当前的通知授权状态。
+    ///
+    /// 为什么要把它显示出来：用户反馈过"关掉安静模式也不弹通知"。
+    /// 系统层的授权一旦被拒（比如重装后 Bundle ID 变了、重新弹窗时点了不允许），
+    /// `UNUserNotificationCenter.add` 会**静默失败**——代码这边看不出任何异常，
+    /// 用户那边什么都收不到。所以这个状态必须可见，而且要能一键跳到系统设置。
+    static func authorizationStatusText(_ completion: @escaping (String, Bool) -> Void) {
+        UNUserNotificationCenter.current().getNotificationSettings { s in
+            let (text, ok): (String, Bool)
+            switch s.authorizationStatus {
+            case .authorized: text = "已允许"; ok = true
+            case .provisional: text = "临时允许（安静投递）"; ok = true
+            case .notDetermined: text = "还没问过（点下面的测试通知会弹窗）"; ok = false
+            case .denied: text = "**被系统拒绝了** —— 去系统设置里打开"; ok = false
+            case .ephemeral: text = "临时授权"; ok = true
+            @unknown default: text = "未知状态"; ok = false
+            }
+            DispatchQueue.main.async { completion(text, ok) }
+        }
+    }
+
     /// 快速模式（只出判断、没有候选）时的通知：只报结论，不带候选按钮。
     func presentVerdict(headline: String, chatTitle: String) {
         let content = UNMutableNotificationContent()

@@ -62,6 +62,10 @@ enum JevError: LocalizedError {
     case missingKey(String)
     case http(Int, String)
     case badJSON(String)
+    /// 某个阶段超时。**必须单独一类**：用户看到的"一直转圈没结果"就是它，
+    /// 而且要说清是哪一步超时，否则没法判断是网慢还是模型慢。
+    case timeout(String, Double)
+    case cancelled
 
     var errorDescription: String? {
         switch self {
@@ -69,6 +73,9 @@ enum JevError: LocalizedError {
         case .missingKey(let n): return "缺少密钥：请到设置里填 \(n)"
         case .http(let c, let m): return "HTTP \(c)：\(m)"
         case .badJSON(let m): return "返回格式不对：\(m)"
+        case .timeout(let stage, let sec):
+            return String(format: "%@ 超时（%.0f 秒内没返回）。已放弃这一轮，下一帧会自动重试。", stage, sec)
+        case .cancelled: return "已取消"
         }
     }
 }
@@ -118,17 +125,34 @@ final class JevPipeline {
 
     // MARK: HTTP
 
+    /// 发 POST 请求，**整个阶段受一个总预算约束**。
+    ///
+    /// 为什么必须有总预算：只设 `URLRequest.timeoutInterval` 是不够的——那是"多久没收到
+    /// 数据"的空闲超时，不是总时长上限，而且它和重试是**相乘**关系。实测踩过：
+    /// `retries: 3` 配上 provider 里 180 秒的 `timeout_default`，最坏是 4×180 秒再加退避
+    /// ≈ 12 分钟。用户看到的就是"一直转圈、几分钟不出结果、也不弹通知"——
+    /// 卡住期间所有帧都被丢掉。
+    ///
+    /// 做法：
+    ///   · 每次尝试的超时 = **剩余预算**（所以单次尝试不可能超出总预算）；
+    ///   · 重试前先看还剩多少，剩余不足 2 秒就直接抛超时，不再发起；
+    ///   · 退避等待也不许吃掉预算。
     private func postJSON(_ body: [String: Any], to p: BrainConfig.Provider,
-                          timeout: Double, retries: Int = 3) async throws -> [String: Any] {
+                          budget: Double, stage: String, retries: Int = 1) async throws -> [String: Any] {
         guard let url = URL(string: p.url) else { throw JevError.config("端点不合法: \(p.url)") }
         let h = try headers(for: p)
         let payload = try JSONSerialization.data(withJSONObject: body)
+        let start = Date()
         var lastErr: Error?
 
         for attempt in 0...retries {
+            let remaining = budget - Date().timeIntervalSince(start)
+            guard remaining > 2 else {
+                throw lastErr ?? JevError.timeout(stage, budget)
+            }
             var req = URLRequest(url: url)
             req.httpMethod = "POST"
-            req.timeoutInterval = timeout
+            req.timeoutInterval = remaining
             for (k, v) in h { req.setValue(v, forHTTPHeaderField: k) }
             req.httpBody = payload
             do {
@@ -140,21 +164,27 @@ final class JevPipeline {
                 let text = String(data: data, encoding: .utf8) ?? ""
                 // 429/5xx 退避重试；其它错误直接抛出（客户端错误重试没意义）
                 if (code == 429 || (500...599).contains(code)) && attempt < retries {
-                    try? await Task.sleep(nanoseconds: UInt64(pow(2.0, Double(attempt)) * 1_000_000_000))
                     lastErr = JevError.http(code, String(text.prefix(200)))
+                    let left = budget - Date().timeIntervalSince(start)
+                    if left > 4 { try? await Task.sleep(nanoseconds: UInt64(min(pow(2.0, Double(attempt)), left - 2) * 1_000_000_000)) }
                     continue
                 }
                 throw JevError.http(code, String(text.prefix(300)))
             } catch let e as JevError {
                 throw e
             } catch {
+                // URLSession 的超时/断连走的这里。同一次 stage 内最多再试一次，
+                // 且仍然受总预算约束——本地 4G 抖动时不会变成"重试到天荒地老"。
                 lastErr = error
                 if attempt < retries {
-                    try? await Task.sleep(nanoseconds: UInt64(pow(2.0, Double(attempt)) * 1_000_000_000))
+                    let left = budget - Date().timeIntervalSince(start)
+                    if left > 4 { try? await Task.sleep(nanoseconds: UInt64(min(2.0, left - 2) * 1_000_000_000)) }
                     continue
                 }
             }
         }
+        // 循环结束还没成功：区分"没时间了"与"试完了"
+        if Date().timeIntervalSince(start) >= budget - 2 { throw JevError.timeout(stage, budget) }
         throw lastErr ?? JevError.http(0, "重试耗尽")
     }
 
@@ -287,8 +317,10 @@ final class JevPipeline {
     func analyze(image: UIImage,
                  sessionHint: SessionHint? = nil,
                  skipDraft: Bool = false,
-                 contextProvider: ContextProvider? = nil) async throws -> JevAnalysis {
+                 contextProvider: ContextProvider? = nil,
+                 onStage: ((String) -> Void)? = nil) async throws -> JevAnalysis {
         let t0 = Date()
+        onStage?("感知中")
 
         // ---- 1) 感知 ----
         guard let perception = BrainConfig.provider(role: "perception") else {
@@ -319,7 +351,10 @@ final class JevPipeline {
                 ]],
             ],
         ]
-        let pResp = try await postJSON(perceptionBody, to: perception, timeout: perception.timeout)
+        // 预算按**实测耗时**给（感知最慢 15.5s），不是 provider 里那个通用超时。
+        let pBudget = ProvidersStore.shared.timeout(for: "perception")
+        let pResp = try await postJSON(perceptionBody, to: perception,
+                                       budget: pBudget, stage: "感知", retries: 1)
         let pChoices = pResp["choices"] as? [[String: Any]]
         let pContent = ((pChoices?.first?["message"] as? [String: Any])?["content"] as? String) ?? ""
         if pContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -445,7 +480,10 @@ final class JevPipeline {
             throw JevError.config("providers.json 里 roles.judge 没配好")
         }
         let judgeBody: [String: Any] = ["model": judge.model, "state": state, "questions": questions]
-        let jResp = try await postJSON(judgeBody, to: judge, timeout: judge.timeout)
+        let jBudget = ProvidersStore.shared.timeout(for: "judge")
+        onStage?("判断中")
+        let jResp = try await postJSON(judgeBody, to: judge,
+                                       budget: jBudget, stage: "判断", retries: 2)
         // 答案可能在顶层 answers，也可能在 data.answers 下（两端历史实现都兼容）
         let answers = (jResp["answers"] as? [String: Any])
             ?? ((jResp["data"] as? [String: Any])?["answers"] as? [String: Any])
@@ -534,7 +572,10 @@ final class JevPipeline {
                     ["role": "user", "content": draftUserText],
                 ],
             ]
-            let dResp = try await postJSON(draftBody, to: analysis, timeout: analysis.timeout)
+            let dBudget = ProvidersStore.shared.timeout(for: "analysis")
+            onStage?("起草候选")
+            let dResp = try await postJSON(draftBody, to: analysis,
+                                           budget: dBudget, stage: "起草", retries: 1)
             let dContent = (((dResp["choices"] as? [[String: Any]])?.first?["message"] as? [String: Any])?["content"] as? String) ?? ""
             candidates = parseThree(dContent)
         } catch {
@@ -558,7 +599,10 @@ final class JevPipeline {
                 ]
             ]
             let rBody: [String: Any] = ["model": judge.model, "state": state, "questions": rankQ]
-            let rResp = try await postJSON(rBody, to: judge, timeout: judge.timeout)
+            onStage?("排序候选")
+            let rResp = try await postJSON(rBody, to: judge,
+                                           budget: ProvidersStore.shared.timeout(for: "rank"),
+                                           stage: "排序", retries: 2)
             let rAnswers = (rResp["answers"] as? [String: Any]) ?? [:]
             let probs = ((rAnswers["best_reply"] as? [String: Any])?["probabilities"] as? [String: Double]) ?? [:]
             let keys = ["reply_a", "reply_b", "reply_c"]

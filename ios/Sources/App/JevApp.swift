@@ -67,7 +67,40 @@ final class AppBridge: ObservableObject {
     /// 实测：同一句「现在流行这样测智商」在同一分钟内被分析了两次，
     /// 两条记录的发言人、"上文"完全一样。
     /// Jev 判断的对象就是最新消息，所以去重判据就该是它。
+    /// 当前阶段（"感知中"/"判断中"/"起草候选"/"排序候选"），与耗时一起显示
+    @Published private(set) var stage: String = ""
+    /// 通知授权状态文案 + 是否可用。**必须可见**：系统层被拒时通知是静默失败的，
+    /// 界面上什么都看不出来（用户反馈过"关掉安静模式也不弹"，多半就是这里）。
+    @Published private(set) var notificationStatus: String = "查询中…"
+    @Published private(set) var notificationAllowed = false
+
+    /// 返回"哪个角色缺密钥"的可读说明；都齐了返回 nil。
+    private func firstMissingKey() -> String? {
+        for role in ProvidersStore.roles {
+            guard let p = BrainConfig.provider(role: role) else {
+                return "「\(ProvidersStore.roleLabel(role))」没有可用的 provider，去设置里配一个"
+            }
+            if p.apiKeyOptional || p.keyAccount.isEmpty { continue }
+            if !KeychainStore.has(p.keyAccount) {
+                return "「\(ProvidersStore.roleLabel(role))」用的 \(p.label) 还没填 API Key"
+            }
+        }
+        return nil
+    }
+
+    func refreshNotificationStatus() {
+        NotificationPresenter.authorizationStatusText { [weak self] text, ok in
+            self?.notificationStatus = text
+            self?.notificationAllowed = ok
+        }
+    }
     private var lastLatest: [String: String] = [:]
+    /// 上次分析这条文本的时间。与 lastLatest 一起用于判重（见 repeatWindow）。
+    private var lastLatestAt: [String: Date] = [:]
+    /// 同一条文本多久之后允许重判。太短会重复分析，太长会把"对方又发了一遍"当重复。
+    private static let repeatWindow: TimeInterval = 180
+    /// 单次分析的硬上限（秒）。四个阶段的预算之和约 120 秒，再留一点余量。
+    private static let hardLimit: TimeInterval = 150
     /// 两次分析之间的最小间隔，兜住像素噪声造成的连续触发
     private var lastAnalysisAt: Date?
     @Published private(set) var skippedAsRepeat = 0
@@ -103,6 +136,7 @@ final class AppBridge: ObservableObject {
     private var analysisStartedAt: Date?
 
     func setUp() {
+        refreshNotificationStatus()
         // 通知的注册已经在 AppDelegate 里做了；这里只补一次以免首帧竞态
         notifications.register()
         // 读回用户上次的选择（默认：自动开、不限制会话）
@@ -123,9 +157,21 @@ final class AppBridge: ObservableObject {
     /// （实测感知 7s、总 13.8s），等用户看向面板时结果已经在了，
     /// 比压模型延迟更实际。
     func handleStableFrame(_ image: UIImage, force: Bool = false) {
+        // **安全网**：每个阶段的预算已经封住了时间（见 JevPipeline.postJSON），
+        // 但万一有哪条路径不守预算（或 Task 被挂住），isAnalyzing 就会一直是 true，
+        // 而它一为真所有帧都被丢掉——用户看到的就是"几分钟什么都读不出来"。
+        // 所以这里再加一道硬上限：超过就强制放行，让下一帧重新开始。
+        if isAnalyzing, let t = analysisStartedAt,
+           Date().timeIntervalSince(t) > Self.hardLimit {
+            lastError = String(format: "上一次分析超过 %.0f 秒仍未结束，已强制放弃（下一帧重新开始）", Self.hardLimit)
+            finishAnalysis()
+        }
         guard !isAnalyzing else { return }          // 上一次还没跑完就跳过，避免堆积
-        guard !BrainConfig.allKeyNames().isEmpty else {
-            status = "还没配密钥，去设置里填"
+        // 检查**三个角色实际要用的密钥**，而不是"配置里存在任何密钥账号"。
+        // 改成可自由配置 provider 之后，allKeyNames() 永远非空（它列出所有 provider），
+        // 这个守卫等于失效了——用户漏填某个角色的密钥时，界面只会说一句含糊的失败。
+        if let missing = firstMissingKey() {
+            status = missing
             return
         }
         // 自动分析关着时，只有手动触发才跑（用户要求"由我决定这个功能开不开"）
@@ -148,6 +194,7 @@ final class AppBridge: ObservableObject {
         isAnalyzing = true
         lastError = nil
         analysisStartedAt = Date()
+        stage = "启动中"
         status = "分析中… 0s"
         startProgressTimer()
 
@@ -155,28 +202,39 @@ final class AppBridge: ObservableObject {
             do {
                 // 会话档案在**感知拿到标题之后**才取（见 pipeline 里的说明）：
                 // 用上一次的标题猜档案会把上一个会话的身份注入进来，那比不注入更糟。
-                let a = try await pipeline.analyze(image: image, sessionHint: lastSession, skipDraft: fastMode) { [weak self] title, isGroup in
-                    guard let self else { return JevPipeline.SessionContext() }
-                    let key = self.store.sessionKey(for: title, isGroup: isGroup)
-                    var ctx = JevPipeline.SessionContext()
+                let a = try await pipeline.analyze(
+                    image: image, sessionHint: lastSession, skipDraft: fastMode,
+                    // 显式传 contextProvider，不用尾随闭包：同时给"带标签的闭包参数"和
+                    // "尾随闭包"时绑定有歧义，而本机没有 Swift 编译器可验，不如写清楚。
+                    contextProvider: { [weak self] title, isGroup in
+                        guard let self else { return JevPipeline.SessionContext() }
+                        let key = self.store.sessionKey(for: title, isGroup: isGroup)
+                        var ctx = JevPipeline.SessionContext()
 
-                    // ① 人工填的关系与人物身份 → 注入判断层。
-                    //    人物身份是**跨会话**的：同一个人在其他群填过，这里也会带上。
-                    ctx.relationship = self.store.profiles[key]?.relationshipText(fallback: "") ?? ""
-                    let facts = self.store.personFacts(inSession: key)
-                    if !facts.isEmpty {
-                        ctx.memory = [
-                            "note": "以下是人工维护的会话与人物档案（人物身份跨会话通用），"
-                                  + "属于已知前提，不是当前对话内容",
-                            "chat_title": title,
-                            "is_group": isGroup,
-                            "facts": ["人工档案": facts],
-                        ]
+                        // ① 人工填的关系与人物身份 → 注入判断层。
+                        //    人物身份是**跨会话**的：同一个人在其他群填过，这里也会带上。
+                        ctx.relationship = self.store.profiles[key]?.relationshipText(fallback: "") ?? ""
+                        let facts = self.store.personFacts(inSession: key)
+                        if !facts.isEmpty {
+                            ctx.memory = [
+                                "note": "以下是人工维护的会话与人物档案（人物身份跨会话通用），"
+                                      + "属于已知前提，不是当前对话内容",
+                                "chat_title": title,
+                                "is_group": isGroup,
+                                "facts": ["人工档案": facts],
+                            ]
+                        }
+                        // ② 跨帧累积的群聊上下文 → 补上这一帧看不到的更早消息
+                        ctx.priorLines = self.store.recentLines(in: key, n: 12)
+                        return ctx
+                    },
+                    // 阶段回调：让"一直转圈"变成"卡在哪一步、已经多久"。
+                    // 用户反馈过"86 秒没结果"——只给一个秒数没法判断是网慢还是模型慢。
+                    // （写在 contextProvider 之后：Swift 要求实参按声明顺序出现。）
+                    onStage: { [weak self] stage in
+                        Task { @MainActor in self?.stage = stage }
                     }
-                    // ② 跨帧累积的群聊上下文 → 补上这一帧看不到的更早消息
-                    ctx.priorLines = self.store.recentLines(in: key, n: 12)
-                    return ctx
-                }
+                )
                 latest = a
                 analysisCount += 1
                 status = String(format: "分析完成 · 感知 %.1fs 总 %.1fs", a.perceptionSeconds, a.totalSeconds)
@@ -199,14 +257,19 @@ final class AppBridge: ObservableObject {
                     return
                 }
 
-                // 3) **没有新消息**：最新消息与上次分析的那条相同（发言人 + 文本）。
+                // 3) **没有新消息**：最新消息与上次分析的那条相同。
                 //    手动触发（force）时跳过这道判断——用户明确要求分析就该给结果。
                 //    "没读到对话"与"读到自己的通知"仍是硬拦截，因为那种结果本身就是错的。
-                //    判据刻意只看最新一条：Jev 判断的对象就是它，它没变就没有新东西可判。
-                //    用整段窗口做判据会抖动（消息滚动、截图边界、感知多读少读一条），
-                //    实测导致同一句话被重复分析。
-                let latestKey = "\(a.speaker ?? "")|\(a.latestText)"
-                if !force, let prev = lastLatest[skey], prev == latestKey {
+                //
+                //    判据只用**文本**，不带发言人：发言人名字是视觉模型读出来的，
+                //    同一句话在不同帧里可能被读成不同写法（实测昵称会被读成几种写法），
+                //    带上它就等于给重复分析开了口子——用户正是反馈"还有重复读"。
+                //    另外加一个时间上限：同一条文本超过 3 分钟后允许重判，
+                //    因为对话可能已经往前走了（比如对方把同一句话又发了一遍）。
+                let latestKey = a.latestText
+                if !force, let prev = lastLatest[skey], prev == latestKey,
+                   let prevAt = lastLatestAt[skey],
+                   Date().timeIntervalSince(prevAt) < Self.repeatWindow {
                     skippedAsRepeat += 1
                     status = "最新消息没有变化，已跳过（不是定时重复分析）"
                     finishAnalysis()
@@ -222,6 +285,7 @@ final class AppBridge: ObservableObject {
                 }
 
                 lastLatest[skey] = latestKey
+                lastLatestAt[skey] = Date()
                 lastAnalysisAt = Date()
 
                 // 记入本地记录（按会话分组，App 内可查）
@@ -261,6 +325,7 @@ final class AppBridge: ObservableObject {
                 if quietNotifications && !needReply && !risky && !force {
                     status += "（不值得打扰，只记录不弹通知）"
                     lastLatest[skey] = latestKey
+                    lastLatestAt[skey] = Date()
                     lastAnalysisAt = Date()
                     finishAnalysis()
                     return
@@ -298,6 +363,7 @@ final class AppBridge: ObservableObject {
     private func finishAnalysis() {
         stopProgressTimer()
         isAnalyzing = false
+        stage = ""
     }
 
     private func startProgressTimer() {
@@ -305,7 +371,9 @@ final class AppBridge: ObservableObject {
         progressTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let t0 = self.analysisStartedAt else { return }
-                self.status = String(format: "分析中… 已 %.0f 秒", Date().timeIntervalSince(t0))
+                // 带上阶段：只给秒数看不出卡在哪一步（用户反馈过"86 秒没结果"）
+                let st = self.stage.isEmpty ? "分析中" : self.stage
+                self.status = String(format: "%@… 已 %.0f 秒", st, Date().timeIntervalSince(t0))
             }
         }
     }
