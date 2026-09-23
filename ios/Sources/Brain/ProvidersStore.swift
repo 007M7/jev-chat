@@ -74,6 +74,23 @@ final class ProvidersStore: ObservableObject {
     @Published private(set) var formats: [FormatEntry] = []
     @Published private(set) var roleProviders: [String: String] = [:]
     @Published private(set) var roleModels: [String: String] = [:]
+    /// 每个阶段的**总时间预算**（秒）。见 `timeout(for:)` 里的说明。
+    @Published private(set) var roleTimeouts: [String: Double] = [:]
+
+    /// 预算兜底值：按**实测耗时**留 2~3 倍余量，不是拍脑袋。
+    /// 实测（真实截图、多次）：感知 4.4~15.5s、判断 1.0~1.7s、起草 2.2~7.0s、排序 0.9~1.1s。
+    /// 用户反馈过"一直转圈几分钟没结果"——所以宁可超时就放弃这一轮，
+    /// 也不要让一次卡住把后面所有帧都堵死。
+    static let defaultTimeouts: [String: Double] = [
+        "perception": 40,   // 实测最慢 15.5s，留 2.5 倍
+        "judge": 25,        // 实测最慢 1.7s
+        "analysis": 35,     // 实测最慢 7.0s
+        "rank": 20,         // 实测最慢 1.1s
+    ]
+
+    func timeout(for role: String) -> Double {
+        roleTimeouts[role] ?? Self.defaultTimeouts[role] ?? 40
+    }
 
     /// 用户从自带列表里"删掉"的 provider id（隐藏，而不是从默认里移除）
     private var hiddenBuiltinIDs: Set<String> = []
@@ -129,6 +146,9 @@ final class ProvidersStore: ObservableObject {
         roleModels = ((cfg["role_models"] as? [String: Any]) ?? [:])
             .filter { !$0.key.hasPrefix("_") }
             .compactMapValues { $0 as? String }
+        roleTimeouts = ((cfg["role_timeouts"] as? [String: Any]) ?? [:])
+            .filter { !$0.key.hasPrefix("_") }
+            .compactMapValues { ($0 as? NSNumber)?.doubleValue }
     }
 
     private func parseFormats(_ cfg: [String: Any]) -> [FormatEntry] {
@@ -188,6 +208,9 @@ final class ProvidersStore: ObservableObject {
 
         if let roles = obj["roles"] as? [String: String] { roleProviders.merge(roles) { _, new in new } }
         if let rm = obj["role_models"] as? [String: String] { roleModels.merge(rm) { _, new in new } }
+        if let rt = obj["role_timeouts"] as? [String: Any] {
+            for (k, v) in rt { if let d = (v as? NSNumber)?.doubleValue { roleTimeouts[k] = d } }
+        }
         if let del = obj["deleted"] as? [String] { hiddenBuiltinIDs = Set(del) }
 
         if let patch = obj["providers"] as? [String: Any] {
@@ -375,6 +398,7 @@ final class ProvidersStore: ObservableObject {
             "providers": provPatch,
             "roles": roleProviders,
             "role_models": roleModels,
+            "role_timeouts": roleTimeouts,
         ]
         if !hiddenBuiltinIDs.isEmpty { out["deleted"] = Array(hiddenBuiltinIDs).sorted() }
         guard let data = try? JSONSerialization.data(withJSONObject: out,
